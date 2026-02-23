@@ -6,7 +6,7 @@ Record a video, send it encrypted. Only the person you sent it to can watch it. 
 
 ## Why
 
-[Marco Polo](https://marcopolo.me/) has a **WARNING** privacy rating. They don't offer E2E encryption, can access your video content, and profile your data. There is no open-source, self-hosted, E2E encrypted alternative for async video messaging.
+[Marco Polo](https://marcopolo.me/) has a [**WARNING** privacy rating](https://privacy.commonsense.org/evaluation/Marco-Polo-Video-Walkie-Talkie) from Common Sense Privacy. They don't offer E2E encryption, can access your video content, and profile your data. There is no open-source, self-hosted, E2E encrypted alternative for async video messaging.
 
 **Nobody occupies this market square.** Until now.
 
@@ -36,8 +36,8 @@ Record a video, send it encrypted. Only the person you sent it to can watch it. 
 
 ## Tech Stack
 
-- **Server:** Node.js — lightweight encrypted blob relay
-- **Client:** React Native (iOS first, Android to follow)
+- **Server:** Go — lightweight encrypted blob relay, single binary, tiny Docker image
+- **Client:** Swift (iOS) — native camera/crypto/Keychain access. Kotlin (Android) to follow.
 - **Crypto:** [libsodium](https://doc.libsodium.org/) — XChaCha20-Poly1305, per-message ephemeral keys
 - **Deploy:** Docker + docker-compose (one-command self-host)
 - **Storage:** Local filesystem + optional S3-compatible
@@ -48,7 +48,7 @@ Record a video, send it encrypted. Only the person you sent it to can watch it. 
 - 1:1 async video messaging
 - E2E encryption (libsodium)
 - Self-hosted server (Docker)
-- iOS app (React Native)
+- iOS app (native Swift)
 - Push notifications
 - Contact management (invite by link/code)
 - Delivery receipts (sent/delivered/watched)

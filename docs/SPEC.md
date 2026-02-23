@@ -17,12 +17,24 @@ An open-source, self-hosted, E2E encrypted async video messaging app. The privat
 - REST API + WebSocket for real-time notifications
 - Storage: local disk or S3-compatible
 
-### Client (mobile app)
-- Records video
+### Client (native mobile app — Swift for iOS, Kotlin for Android)
+- Records video via native camera APIs (AVFoundation / CameraX)
 - Encrypts locally before upload
 - Decrypts on download
-- Key management (generate, exchange, store in secure enclave)
+- Key management (generate, exchange, store in Secure Enclave / Keystore)
 - Push notifications via server
+
+### Why Native (Not React Native)
+- **Camera access:** Direct AVFoundation/CameraX gives better quality, lower latency, finer control over recording
+- **Crypto integration:** iOS Keychain/Secure Enclave and Android Keystore are first-class in native, bridged in RN
+- **Simplicity:** The app has a small surface (record → encrypt → upload → download → decrypt → play) — doesn't benefit from cross-platform UI abstraction
+- **Trust:** Native code is easier to audit for security-critical apps
+
+### Why Go (Not Node.js) for the Server
+- **Blob streaming:** Go handles concurrent large file I/O more efficiently than Node
+- **Single binary:** Docker image is ~20MB vs ~200MB+ for Node
+- **Crypto:** `golang.org/x/crypto/nacl` is stdlib-adjacent — no npm dependency tree
+- **Simplicity:** The server is a dumb relay. Go's stdlib covers HTTP, WebSocket, and file handling without a framework
 
 ### Encryption
 - **libsodium** (NaCl) — battle-tested, hard to misuse
@@ -161,6 +173,25 @@ created_at: timestamp
 - **Server compromise:** Attacker gets encrypted blobs only. Useless without device keys.
 - **Device compromise:** Standard mobile security applies. Keys in secure enclave.
 - **Forward secrecy:** Ephemeral keys per message = past messages safe if current key compromised.
+
+---
+
+## Trust Model
+
+### How can users trust the app?
+
+The same way you trust Signal — layers of verifiability:
+
+1. **Open source** — all code is public. Encryption happens client-side, anyone can audit it.
+2. **Reproducible builds** — deterministic builds let users verify the App Store binary matches the public source code.
+3. **No server trust required** — the server only stores encrypted blobs. Even a compromised server reveals nothing.
+4. **Minimal permissions** — camera + network only. No contacts, no location, no analytics SDKs, no tracking.
+5. **Key verification (V2)** — safety numbers (like Signal) so users can verify they're talking to who they think.
+
+### What you don't have to trust
+- The server operator (they can't see your videos)
+- The App Store (reproducible builds verify the binary)
+- Us (the code is open — verify it yourself)
 
 ---
 

@@ -19,22 +19,23 @@ Server only sees encrypted blobs.
 
 ```
 speakeasy/
-├── server/          # Node.js relay server
-│   ├── src/
-│   │   ├── routes/  # REST API handlers
+├── server/          # Go relay server
+│   ├── cmd/         # Entry point
+│   ├── internal/
+│   │   ├── api/     # REST API handlers
 │   │   ├── ws/      # WebSocket notifications
 │   │   ├── storage/ # Blob storage (local/S3)
-│   │   ├── db/      # SQLite via better-sqlite3
+│   │   ├── db/      # SQLite
 │   │   └── push/    # Push notification service
 │   ├── Dockerfile
-│   └── package.json
-├── app/             # React Native mobile app
-│   ├── src/
-│   │   ├── crypto/  # libsodium encryption
-│   │   ├── api/     # Server communication
-│   │   ├── screens/ # UI screens
-│   │   └── store/   # Local state
-│   └── package.json
+│   └── go.mod
+├── ios/             # Swift iOS app
+│   ├── Speakeasy/
+│   │   ├── Crypto/  # libsodium encryption
+│   │   ├── API/     # Server communication
+│   │   ├── Views/   # SwiftUI screens
+│   │   └── Store/   # Local state
+│   └── Speakeasy.xcodeproj
 ├── docker-compose.yml
 └── docs/
     ├── SPEC.md
