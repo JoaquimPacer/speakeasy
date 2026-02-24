@@ -11,7 +11,7 @@ All cryptography is provided by [libsodium](https://doc.libsodium.org/), a widel
 | Purpose | Algorithm | libsodium Function |
 |---------|-----------|-------------------|
 | Key exchange | X25519 | `crypto_kx_*` |
-| Symmetric encryption | XChaCha20-Poly1305 | `crypto_secretbox_*` |
+| Symmetric encryption | XSalsa20-Poly1305 | `crypto_secretbox_*` |
 | Asymmetric encryption | X25519 + XSalsa20-Poly1305 | `crypto_box_seal` |
 | Key derivation | BLAKE2b | `crypto_generichash` |
 | Random bytes | OS CSPRNG | `randombytes_buf` |

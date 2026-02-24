@@ -122,7 +122,7 @@ created_at: timestamp
 ## Video Pipeline
 
 ### Recording
-1. Capture video via device camera (React Native camera module)
+1. Capture video via device camera (AVFoundation / CameraX)
 2. Compress client-side (target: ~2MB/min at 480p, configurable)
 3. Generate thumbnail (also encrypted separately)
 
