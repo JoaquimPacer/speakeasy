@@ -1,0 +1,5 @@
+module github.com/joaquimpacer/speakeasy/server
+
+go 1.22
+
+require modernc.org/sqlite v1.29.10

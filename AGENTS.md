@@ -1,12 +1,12 @@
-# CLAUDE.md
+# AGENTS.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+This file provides guidance to Codex (Codex.ai/code) when working with code in this repository.
 
 ## Project Overview
 
 Speakeasy is an end-to-end encrypted async video messaging app. Self-hosted, open source, zero-knowledge server design. The server is a "dumb relay" that never sees plaintext content.
 
-**Current phase:** Specification and documentation are being turned into the first server and iOS scaffolds. Active decisions, API contracts, and status are documented in `docs/`.
+**Current phase:** Specification and documentation complete; implementation has not started. All design decisions, API contracts, and security architecture are documented in `docs/`.
 
 ## Planned Tech Stack
 
@@ -36,7 +36,7 @@ server/
 
 ## Key Design Constraints
 
-- **Per-message encrypted content keys** — every video uses a fresh content key; full Signal-style forward secrecy is out of V1 scope
+- **Per-message ephemeral keys** for forward secrecy — every message uses a fresh X25519 keypair
 - **libsodium only** for all cryptographic operations — no custom crypto, no other libraries
 - **No analytics, tracking, or telemetry** — privacy is a core requirement
 - **Native clients only** — no React Native or cross-platform frameworks (performance and crypto access)
@@ -53,9 +53,6 @@ Defined in `docs/SPEC.md`. Key endpoint groups:
 
 ## Documentation Map
 
-- `docs/BUILD_PLAN.md` — active build plan, agent handoff, roadmap, and status log
-- `docs/OWNER_SETUP.md` — owner checklist for Apple, DNS, CI secrets, APNs, and later Google Play
-- `docs/API.md` — first local vertical-slice API contract
 - `docs/SPEC.md` — full technical specification (API, data model, video pipeline, key exchange flow)
 - `docs/ARCHITECTURE.md` — system diagram and component layout
 - `docs/SECURITY.md` — cryptographic primitives, threat model, key management

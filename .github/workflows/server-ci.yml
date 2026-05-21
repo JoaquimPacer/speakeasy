@@ -1,0 +1,117 @@
+name: Server CI
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/server-ci.yml"
+      - "server/**"
+      - "docker-compose*.yml"
+      - "docker-compose*.yaml"
+      - "compose*.yml"
+      - "compose*.yaml"
+      - "go.work"
+      - "go.work.sum"
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/server-ci.yml"
+      - "server/**"
+      - "docker-compose*.yml"
+      - "docker-compose*.yaml"
+      - "compose*.yml"
+      - "compose*.yaml"
+      - "go.work"
+      - "go.work.sum"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: server-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  server:
+    name: Server checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Detect available checks
+        id: detect
+        shell: bash
+        run: |
+          if [[ -f server/go.mod ]]; then
+            echo "has_go=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_go=false" >> "$GITHUB_OUTPUT"
+            echo "server/go.mod not found; skipping Go checks until the server scaffold lands."
+          fi
+
+          if [[ -f docker-compose.yml || -f docker-compose.yaml || -f compose.yml || -f compose.yaml ]]; then
+            echo "has_compose=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_compose=false" >> "$GITHUB_OUTPUT"
+            echo "No Docker Compose file found; skipping compose validation."
+          fi
+
+          if [[ -f server/Dockerfile ]]; then
+            echo "has_dockerfile=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_dockerfile=false" >> "$GITHUB_OUTPUT"
+            echo "server/Dockerfile not found; skipping image build."
+          fi
+
+      - name: Set up Go
+        if: steps.detect.outputs.has_go == 'true'
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: server/go.mod
+          cache-dependency-path: |
+            server/go.mod
+            server/go.sum
+
+      - name: Check Go formatting
+        if: steps.detect.outputs.has_go == 'true'
+        working-directory: server
+        shell: bash
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [[ -n "$unformatted" ]]; then
+            echo "Go files need gofmt:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: Run Go tests
+        if: steps.detect.outputs.has_go == 'true'
+        working-directory: server
+        run: go test ./...
+
+      - name: Run Go vet
+        if: steps.detect.outputs.has_go == 'true'
+        working-directory: server
+        run: go vet ./...
+
+      - name: Validate Docker Compose
+        if: steps.detect.outputs.has_compose == 'true'
+        shell: bash
+        run: |
+          compose_file=""
+          for candidate in docker-compose.yml docker-compose.yaml compose.yml compose.yaml; do
+            if [[ -f "$candidate" ]]; then
+              compose_file="$candidate"
+              break
+            fi
+          done
+
+          docker compose -f "$compose_file" config
+
+      - name: Build server image
+        if: steps.detect.outputs.has_dockerfile == 'true'
+        run: docker build -t speakeasy-server:ci server

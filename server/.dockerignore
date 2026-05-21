@@ -1,0 +1,7 @@
+.git
+data
+*.db
+*.db-*
+*.sqlite
+*.sqlite-*
+coverage.out
