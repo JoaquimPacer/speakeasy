@@ -1,11 +1,12 @@
 import Foundation
 import Security
+import Sodium
 
 enum DeviceKeyManagerError: Error, LocalizedError {
     case identityNotFound
     case corruptStoredIdentity
     case keychain(OSStatus)
-    case libsodiumBindingRequired(String)
+    case cryptoOperationFailed(String)
 
     var errorDescription: String? {
         switch self {
@@ -15,8 +16,8 @@ enum DeviceKeyManagerError: Error, LocalizedError {
             return "The stored device identity could not be decoded."
         case .keychain(let status):
             return "Keychain operation failed with status \(status)."
-        case .libsodiumBindingRequired(let operation):
-            return "\(operation) requires the libsodium binding to be installed."
+        case .cryptoOperationFailed(let operation):
+            return "\(operation) failed."
         }
     }
 }
@@ -24,6 +25,7 @@ enum DeviceKeyManagerError: Error, LocalizedError {
 protocol DeviceKeyManaging {
     func currentIdentity() async throws -> DevicePublicIdentity?
     func loadOrCreateIdentity() async throws -> DevicePublicIdentity
+    func bindRegisteredDeviceID(_ deviceID: UUID) async throws -> DevicePublicIdentity
     func storeGeneratedIdentity(
         deviceID: UUID?,
         encryptionPublicKey: Data,
@@ -43,6 +45,7 @@ final class KeychainDeviceKeyManager: DeviceKeyManaging {
     private let accessGroup: String?
     private let encoder = JSONEncoder()
     private let decoder = JSONDecoder()
+    private let sodium = Sodium()
 
     init(
         service: String = "com.speakeasy.device-key",
@@ -63,9 +66,30 @@ final class KeychainDeviceKeyManager: DeviceKeyManaging {
             return identity
         }
 
-        throw DeviceKeyManagerError.libsodiumBindingRequired(
-            "Generating the first device encryption and signing identities"
+        guard let encryptionKeyPair = sodium.box.keyPair() else {
+            throw DeviceKeyManagerError.cryptoOperationFailed("Generating X25519 device encryption keys")
+        }
+        guard let signingKeyPair = sodium.sign.keyPair() else {
+            throw DeviceKeyManagerError.cryptoOperationFailed("Generating Ed25519 device signing keys")
+        }
+
+        return try await storeGeneratedIdentity(
+            deviceID: nil,
+            encryptionPublicKey: Data(encryptionKeyPair.publicKey),
+            encryptionPrivateKey: Data(encryptionKeyPair.secretKey),
+            signingPublicKey: Data(signingKeyPair.publicKey),
+            signingPrivateKey: Data(signingKeyPair.secretKey)
         )
+    }
+
+    func bindRegisteredDeviceID(_ deviceID: UUID) async throws -> DevicePublicIdentity {
+        guard var record = try loadStoredRecord() else {
+            throw DeviceKeyManagerError.identityNotFound
+        }
+
+        record.deviceID = deviceID
+        try save(record)
+        return record.publicIdentity
     }
 
     func storeGeneratedIdentity(
@@ -96,25 +120,50 @@ final class KeychainDeviceKeyManager: DeviceKeyManaging {
     }
 
     func makeLoginChallengeResponse(challenge: Data) async throws -> Data {
-        _ = challenge
-        throw DeviceKeyManagerError.libsodiumBindingRequired(
-            "Signing an auth challenge with the device signing key"
-        )
+        guard let record = try loadStoredRecord() else {
+            throw DeviceKeyManagerError.identityNotFound
+        }
+        guard let signature = sodium.sign.signature(
+            message: Array(challenge),
+            secretKey: Array(record.signingPrivateKey)
+        ) else {
+            throw DeviceKeyManagerError.cryptoOperationFailed("Signing the relay auth challenge")
+        }
+
+        return Data(signature)
     }
 
     func encryptContentKey(_ contentKey: Data, recipientPublicKey: Data) async throws -> ContentKeyEnvelope {
-        _ = contentKey
-        _ = recipientPublicKey
-        throw DeviceKeyManagerError.libsodiumBindingRequired(
-            "Wrapping a per-message content key with crypto_box_seal"
+        guard let sealedContentKey = sodium.box.seal(
+            message: Array(contentKey),
+            recipientPublicKey: Array(recipientPublicKey)
+        ) else {
+            throw DeviceKeyManagerError.cryptoOperationFailed("Wrapping the message content key")
+        }
+
+        return ContentKeyEnvelope(
+            algorithm: ContentKeyEnvelope.sealedBox,
+            encryptedContentKey: Data(sealedContentKey),
+            recipientPublicKeyFingerprint: Data(recipientPublicKey.prefix(16)).base64EncodedString()
         )
     }
 
     func decryptContentKey(from envelope: ContentKeyEnvelope) async throws -> Data {
-        _ = envelope
-        throw DeviceKeyManagerError.libsodiumBindingRequired(
-            "Unwrapping a per-message content key"
-        )
+        guard envelope.algorithm == ContentKeyEnvelope.sealedBox else {
+            throw DeviceKeyManagerError.cryptoOperationFailed("Recognizing the content key envelope algorithm")
+        }
+        guard let record = try loadStoredRecord() else {
+            throw DeviceKeyManagerError.identityNotFound
+        }
+        guard let contentKey = sodium.box.open(
+            anonymousCipherText: Array(envelope.encryptedContentKey),
+            recipientPublicKey: Array(record.encryptionPublicKey),
+            recipientSecretKey: Array(record.encryptionPrivateKey)
+        ) else {
+            throw DeviceKeyManagerError.cryptoOperationFailed("Unwrapping the message content key")
+        }
+
+        return Data(contentKey)
     }
 
     private func loadStoredRecord() throws -> StoredDeviceKeyRecord? {

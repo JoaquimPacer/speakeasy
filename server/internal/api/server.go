@@ -39,9 +39,11 @@ func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", s.handleHealth)
 	mux.HandleFunc("/auth/register", s.handleRegister)
+	mux.HandleFunc("/account", s.handleAccount)
 	mux.HandleFunc("/contacts/invite", s.handleCreateInvite)
 	mux.HandleFunc("/contacts/accept", s.handleAcceptInvite)
 	mux.HandleFunc("/contacts", s.handleContacts)
+	mux.HandleFunc("/contacts/", s.handleContactByID)
 	mux.HandleFunc("/messages", s.handleMessages)
 	mux.HandleFunc("/messages/", s.handleMessageByID)
 	mux.HandleFunc("/blocks", s.handleBlocks)
@@ -96,6 +98,7 @@ type registerRequest struct {
 type contactResponse struct {
 	UserID              string `json:"userID"`
 	ContactID           string `json:"contactID"`
+	DeviceID            string `json:"deviceID"`
 	Username            string `json:"username"`
 	Nickname            string `json:"nickname,omitempty"`
 	EncryptionPublicKey []byte `json:"encryptionPublicKey"`
@@ -114,16 +117,19 @@ type acceptInviteRequest struct {
 }
 
 type uploadMetadata struct {
-	RecipientID string          `json:"recipientID"`
-	Envelope    json.RawMessage `json:"envelope"`
-	BlobSize    int64           `json:"blobSize"`
-	DurationMs  int64           `json:"durationMs"`
+	RecipientID       string          `json:"recipientID"`
+	RecipientDeviceID string          `json:"recipientDeviceID"`
+	Envelope          json.RawMessage `json:"envelope"`
+	BlobSize          int64           `json:"blobSize"`
+	DurationMs        int64           `json:"durationMs"`
 }
 
 type messageResponse struct {
 	ID                string          `json:"id"`
 	SenderID          string          `json:"senderID"`
+	SenderDeviceID    string          `json:"senderDeviceID"`
 	RecipientID       string          `json:"recipientID"`
+	RecipientDeviceID string          `json:"recipientDeviceID,omitempty"`
 	Envelope          json.RawMessage `json:"envelope"`
 	EncryptedBlobPath string          `json:"encryptedBlobPath,omitempty"`
 	BlobSize          int64           `json:"blobSize"`
@@ -294,6 +300,68 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (s *Server) handleAccount(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path != "/account" {
+		http.NotFound(w, r)
+		return
+	}
+	if r.Method != http.MethodDelete {
+		methodNotAllowed(w, http.MethodDelete)
+		return
+	}
+
+	principal, ok := s.authenticate(w, r)
+	if !ok {
+		return
+	}
+
+	rows, err := s.db.QueryContext(
+		r.Context(),
+		`SELECT encrypted_blob_path
+		   FROM messages
+		  WHERE (sender_user_id = ? OR recipient_user_id = ?)
+		    AND encrypted_blob_path <> ''`,
+		principal.userID,
+		principal.userID,
+	)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	var blobPaths []string
+	for rows.Next() {
+		var blobPath string
+		if err := rows.Scan(&blobPath); err != nil {
+			rows.Close()
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		blobPaths = append(blobPaths, blobPath)
+	}
+	if err := rows.Close(); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if err := rows.Err(); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	for _, blobPath := range blobPaths {
+		if err := s.store.Delete(r.Context(), blobPath); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+	}
+
+	if _, err := s.db.ExecContext(r.Context(), `DELETE FROM users WHERE id = ?`, principal.userID); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 func (s *Server) handleCreateInvite(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		methodNotAllowed(w, http.MethodPost)
@@ -438,7 +506,7 @@ func (s *Server) handleContacts(w http.ResponseWriter, r *http.Request) {
 	rows, err := s.db.QueryContext(
 		r.Context(),
 		`SELECT c.user_id, c.contact_user_id, u.username, COALESCE(c.nickname, ''),
-		        d.encryption_public_key, d.signing_public_key, c.created_at
+		        d.id, d.encryption_public_key, d.signing_public_key, c.created_at
 		   FROM contacts c
 		   JOIN users u ON u.id = c.contact_user_id
 		   JOIN devices d ON d.user_id = c.contact_user_id
@@ -460,6 +528,7 @@ func (s *Server) handleContacts(w http.ResponseWriter, r *http.Request) {
 			&contact.ContactID,
 			&contact.Username,
 			&contact.Nickname,
+			&contact.DeviceID,
 			&contact.EncryptionPublicKey,
 			&contact.SigningPublicKey,
 			&contact.CreatedAt,
@@ -471,6 +540,49 @@ func (s *Server) handleContacts(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, contacts)
+}
+
+func (s *Server) handleContactByID(w http.ResponseWriter, r *http.Request) {
+	rest := strings.Trim(strings.TrimPrefix(r.URL.Path, "/contacts/"), "/")
+	if rest == "" || strings.Contains(rest, "/") {
+		http.NotFound(w, r)
+		return
+	}
+
+	contactID := normalizeID(rest)
+	if contactID == "" {
+		http.Error(w, "contactID is invalid", http.StatusBadRequest)
+		return
+	}
+
+	switch r.Method {
+	case http.MethodDelete:
+		s.deleteContact(w, r, contactID)
+	default:
+		methodNotAllowed(w, http.MethodDelete)
+	}
+}
+
+func (s *Server) deleteContact(w http.ResponseWriter, r *http.Request, contactID string) {
+	principal, ok := s.authenticate(w, r)
+	if !ok {
+		return
+	}
+	if contactID == principal.userID {
+		http.Error(w, "contactID must be another user", http.StatusBadRequest)
+		return
+	}
+
+	if _, err := s.db.ExecContext(
+		r.Context(),
+		`DELETE FROM contacts WHERE user_id = ? AND contact_user_id = ?`,
+		principal.userID,
+		contactID,
+	); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
@@ -497,7 +609,8 @@ func (s *Server) listMessages(w http.ResponseWriter, r *http.Request) {
 
 	rows, err := s.db.QueryContext(
 		r.Context(),
-		`SELECT id, sender_user_id, recipient_user_id, envelope_json, encrypted_blob_path,
+		`SELECT id, sender_user_id, sender_device_id, recipient_user_id,
+		        COALESCE(recipient_device_id, ''), envelope_json, encrypted_blob_path,
 		        blob_size, status, COALESCE(delivered_at, ''), COALESCE(blob_deleted_at, ''),
 		        created_at, expires_at
 		   FROM messages
@@ -548,8 +661,30 @@ func (s *Server) uploadMessage(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid metadata JSON", http.StatusBadRequest)
 		return
 	}
-	if strings.TrimSpace(metadata.RecipientID) == "" || len(metadata.Envelope) == 0 {
-		http.Error(w, "recipientID and envelope are required", http.StatusBadRequest)
+	metadata.RecipientID = normalizeID(metadata.RecipientID)
+	metadata.RecipientDeviceID = normalizeID(metadata.RecipientDeviceID)
+	if metadata.RecipientID == "" || metadata.RecipientDeviceID == "" || len(metadata.Envelope) == 0 {
+		http.Error(w, "recipientID, recipientDeviceID, and envelope are required", http.StatusBadRequest)
+		return
+	}
+	if metadata.RecipientID == principal.userID {
+		http.Error(w, "recipientID must be another user", http.StatusBadRequest)
+		return
+	}
+
+	if isContact, err := s.hasContact(r.Context(), principal.userID, metadata.RecipientID); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	} else if !isContact {
+		http.Error(w, "recipient is not a contact", http.StatusForbidden)
+		return
+	}
+
+	if belongs, err := s.deviceBelongsToUser(r.Context(), metadata.RecipientDeviceID, metadata.RecipientID); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	} else if !belongs {
+		http.Error(w, "recipientDeviceID does not belong to recipientID", http.StatusBadRequest)
 		return
 	}
 
@@ -588,13 +723,14 @@ func (s *Server) uploadMessage(w http.ResponseWriter, r *http.Request) {
 	_, err = s.db.ExecContext(
 		r.Context(),
 		`INSERT INTO messages(
-			id, sender_user_id, sender_device_id, recipient_user_id, envelope_json,
+			id, sender_user_id, sender_device_id, recipient_user_id, recipient_device_id, envelope_json,
 			encrypted_blob_path, blob_size, status, expires_at, created_at, updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, 'sent', ?, ?, ?)`,
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'sent', ?, ?, ?)`,
 		messageID,
 		principal.userID,
 		principal.deviceID,
 		metadata.RecipientID,
+		metadata.RecipientDeviceID,
 		string(metadata.Envelope),
 		blobKey,
 		metadata.BlobSize,
@@ -611,7 +747,9 @@ func (s *Server) uploadMessage(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, messageResponse{
 		ID:                messageID,
 		SenderID:          principal.userID,
+		SenderDeviceID:    principal.deviceID,
 		RecipientID:       metadata.RecipientID,
+		RecipientDeviceID: metadata.RecipientDeviceID,
 		Envelope:          metadata.Envelope,
 		EncryptedBlobPath: blobKey,
 		BlobSize:          metadata.BlobSize,
@@ -629,7 +767,7 @@ func (s *Server) handleMessageByID(w http.ResponseWriter, r *http.Request) {
 	}
 
 	parts := strings.Split(rest, "/")
-	messageID := parts[0]
+	messageID := normalizeID(parts[0])
 	if len(parts) == 1 {
 		switch r.Method {
 		case http.MethodGet:
@@ -833,18 +971,40 @@ func (s *Server) handleBlocks(w http.ResponseWriter, r *http.Request) {
 	if !readJSON(w, r, &req) {
 		return
 	}
-	if strings.TrimSpace(req.BlockedUserID) == "" || req.BlockedUserID == principal.userID {
+	req.BlockedUserID = normalizeID(req.BlockedUserID)
+	if req.BlockedUserID == "" || req.BlockedUserID == principal.userID {
 		http.Error(w, "blockedUserID is invalid", http.StatusBadRequest)
 		return
 	}
 
-	_, err := s.db.ExecContext(
+	tx, err := s.db.BeginTx(r.Context(), nil)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer tx.Rollback()
+
+	if _, err := tx.ExecContext(
 		r.Context(),
 		`INSERT OR IGNORE INTO blocks(blocker_user_id, blocked_user_id) VALUES (?, ?)`,
 		principal.userID,
 		req.BlockedUserID,
-	)
-	if err != nil {
+	); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	if _, err := tx.ExecContext(
+		r.Context(),
+		`DELETE FROM contacts WHERE user_id = ? AND contact_user_id = ?`,
+		principal.userID,
+		req.BlockedUserID,
+	); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	if err := tx.Commit(); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -865,6 +1025,8 @@ func (s *Server) handleReports(w http.ResponseWriter, r *http.Request) {
 	if !readJSON(w, r, &req) {
 		return
 	}
+	req.ReportedUserID = normalizeID(req.ReportedUserID)
+	req.MessageID = normalizeID(req.MessageID)
 	req.Reason = strings.TrimSpace(req.Reason)
 	if req.Reason == "" {
 		http.Error(w, "reason is required", http.StatusBadRequest)
@@ -922,7 +1084,7 @@ func (s *Server) lookupContact(ctx context.Context, userID string, contactID str
 	err := s.db.QueryRowContext(
 		ctx,
 		`SELECT c.user_id, c.contact_user_id, u.username, COALESCE(c.nickname, ''),
-		        d.encryption_public_key, d.signing_public_key, c.created_at
+		        d.id, d.encryption_public_key, d.signing_public_key, c.created_at
 		   FROM contacts c
 		   JOIN users u ON u.id = c.contact_user_id
 		   JOIN devices d ON d.user_id = c.contact_user_id
@@ -936,6 +1098,7 @@ func (s *Server) lookupContact(ctx context.Context, userID string, contactID str
 		&contact.ContactID,
 		&contact.Username,
 		&contact.Nickname,
+		&contact.DeviceID,
 		&contact.EncryptionPublicKey,
 		&contact.SigningPublicKey,
 		&contact.CreatedAt,
@@ -946,7 +1109,8 @@ func (s *Server) lookupContact(ctx context.Context, userID string, contactID str
 func (s *Server) lookupMessage(ctx context.Context, messageID string, userID string) (messageResponse, error) {
 	row := s.db.QueryRowContext(
 		ctx,
-		`SELECT id, sender_user_id, recipient_user_id, envelope_json, encrypted_blob_path,
+		`SELECT id, sender_user_id, sender_device_id, recipient_user_id,
+		        COALESCE(recipient_device_id, ''), envelope_json, encrypted_blob_path,
 		        blob_size, status, COALESCE(delivered_at, ''), COALESCE(blob_deleted_at, ''),
 		        created_at, expires_at
 		   FROM messages
@@ -966,7 +1130,9 @@ func scanMessage(scanner interface {
 	err := scanner.Scan(
 		&message.ID,
 		&message.SenderID,
+		&message.SenderDeviceID,
 		&message.RecipientID,
+		&message.RecipientDeviceID,
 		&envelopeText,
 		&message.EncryptedBlobPath,
 		&message.BlobSize,
@@ -981,6 +1147,34 @@ func scanMessage(scanner interface {
 	}
 	message.Envelope = json.RawMessage(envelopeText)
 	return message, nil
+}
+
+func (s *Server) hasContact(ctx context.Context, userID string, contactID string) (bool, error) {
+	var value int
+	err := s.db.QueryRowContext(
+		ctx,
+		`SELECT 1 FROM contacts WHERE user_id = ? AND contact_user_id = ?`,
+		userID,
+		contactID,
+	).Scan(&value)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	return err == nil, err
+}
+
+func (s *Server) deviceBelongsToUser(ctx context.Context, deviceID string, userID string) (bool, error) {
+	var value int
+	err := s.db.QueryRowContext(
+		ctx,
+		`SELECT 1 FROM devices WHERE id = ? AND user_id = ?`,
+		deviceID,
+		userID,
+	).Scan(&value)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	return err == nil, err
 }
 
 func (s *Server) isBlocked(ctx context.Context, senderID string, recipientID string) (bool, error) {
@@ -1039,6 +1233,10 @@ func writeJSON(w http.ResponseWriter, status int, value any) {
 func methodNotAllowed(w http.ResponseWriter, methods ...string) {
 	w.Header().Set("Allow", strings.Join(methods, ", "))
 	http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+}
+
+func normalizeID(value string) string {
+	return strings.ToLower(strings.TrimSpace(value))
 }
 
 func mustID() string {

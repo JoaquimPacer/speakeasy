@@ -4,6 +4,8 @@ import SwiftUI
 struct ConversationListView: View {
     @EnvironmentObject private var appState: AppState
     @State private var showingRecorder = false
+    @State private var contactMenuTarget: Contact?
+    @State private var pendingContactAction: ContactAction?
 
     var body: some View {
         List {
@@ -14,6 +16,46 @@ struct ConversationListView: View {
                 ForEach(appState.conversations) { conversation in
                     NavigationLink(value: conversation.contact) {
                         ConversationRow(conversation: conversation)
+                    }
+                    .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                        Button(role: .destructive) {
+                            queue(.delete, for: conversation.contact)
+                        } label: {
+                            Label("Delete", systemImage: "trash")
+                        }
+
+                        Button {
+                            queue(.block, for: conversation.contact)
+                        } label: {
+                            Label("Block", systemImage: "hand.raised.fill")
+                        }
+                        .tint(.orange)
+
+                        Button {
+                            contactMenuTarget = conversation.contact
+                        } label: {
+                            Label("More", systemImage: "ellipsis.circle")
+                        }
+                        .tint(.gray)
+                    }
+                    .contextMenu {
+                        Button {
+                            queue(.report, for: conversation.contact)
+                        } label: {
+                            Label("Report Contact", systemImage: "exclamationmark.bubble")
+                        }
+
+                        Button(role: .destructive) {
+                            queue(.block, for: conversation.contact)
+                        } label: {
+                            Label("Block Contact", systemImage: "hand.raised.fill")
+                        }
+
+                        Button(role: .destructive) {
+                            queue(.delete, for: conversation.contact)
+                        } label: {
+                            Label("Delete Contact", systemImage: "trash")
+                        }
                     }
                 }
             }
@@ -37,6 +79,58 @@ struct ConversationListView: View {
                 RecordingPlaceholderView(contact: nil)
             }
         }
+        .refreshable {
+            await appState.refresh()
+        }
+        .confirmationDialog(
+            contactMenuTarget?.displayName ?? "Contact",
+            isPresented: showingContactMenu,
+            titleVisibility: .visible
+        ) {
+            if let contact = contactMenuTarget {
+                Button("Report Contact") {
+                    queue(.report, for: contact)
+                    contactMenuTarget = nil
+                }
+
+                Button("Block Contact", role: .destructive) {
+                    queue(.block, for: contact)
+                    contactMenuTarget = nil
+                }
+
+                Button("Delete Contact", role: .destructive) {
+                    queue(.delete, for: contact)
+                    contactMenuTarget = nil
+                }
+            }
+
+            Button("Cancel", role: .cancel) {
+                contactMenuTarget = nil
+            }
+        }
+        .confirmationDialog(
+            pendingContactAction?.title ?? "Contact",
+            isPresented: showingActionConfirmation,
+            titleVisibility: .visible
+        ) {
+            if let action = pendingContactAction {
+                Button(action.confirmButtonTitle, role: action.buttonRole) {
+                    let selectedAction = action
+                    pendingContactAction = nil
+                    Task {
+                        await perform(selectedAction)
+                    }
+                }
+            }
+
+            Button("Cancel", role: .cancel) {
+                pendingContactAction = nil
+            }
+        } message: {
+            if let action = pendingContactAction {
+                Text(action.message)
+            }
+        }
     }
 
     private var emptyState: some View {
@@ -53,6 +147,95 @@ struct ConversationListView: View {
         }
         .frame(maxWidth: .infinity, minHeight: 280)
         .padding()
+    }
+
+    private var showingContactMenu: Binding<Bool> {
+        Binding {
+            contactMenuTarget != nil
+        } set: { isPresented in
+            if !isPresented {
+                contactMenuTarget = nil
+            }
+        }
+    }
+
+    private var showingActionConfirmation: Binding<Bool> {
+        Binding {
+            pendingContactAction != nil
+        } set: { isPresented in
+            if !isPresented {
+                pendingContactAction = nil
+            }
+        }
+    }
+
+    private func queue(_ kind: ContactAction.Kind, for contact: Contact) {
+        pendingContactAction = ContactAction(kind: kind, contact: contact)
+    }
+
+    private func perform(_ action: ContactAction) async {
+        switch action.kind {
+        case .delete:
+            await appState.deleteContact(action.contact)
+        case .block:
+            await appState.blockContact(action.contact)
+        case .report:
+            await appState.reportContact(action.contact)
+        }
+    }
+}
+
+private struct ContactAction: Identifiable, Hashable {
+    enum Kind: Hashable {
+        case delete
+        case block
+        case report
+    }
+
+    var id: String { "\(kind)-\(contact.id.uuidString)" }
+    var kind: Kind
+    var contact: Contact
+
+    var title: String {
+        switch kind {
+        case .delete:
+            return "Delete \(contact.displayName)?"
+        case .block:
+            return "Block \(contact.displayName)?"
+        case .report:
+            return "Report \(contact.displayName)?"
+        }
+    }
+
+    var confirmButtonTitle: String {
+        switch kind {
+        case .delete:
+            return "Delete Contact"
+        case .block:
+            return "Block Contact"
+        case .report:
+            return "Submit Report"
+        }
+    }
+
+    var buttonRole: ButtonRole? {
+        switch kind {
+        case .delete, .block:
+            return .destructive
+        case .report:
+            return nil
+        }
+    }
+
+    var message: String {
+        switch kind {
+        case .delete:
+            return "This removes the conversation from your contact list on this device and relay account. It does not block future invites."
+        case .block:
+            return "This removes the conversation and prevents this contact from sending new videos to you."
+        case .report:
+            return "This sends a metadata-only report. Kithra does not upload decrypted video content."
+        }
     }
 }
 
@@ -119,9 +302,11 @@ private struct ConversationRow: View {
     }
 }
 
-#Preview {
-    NavigationStack {
-        ConversationListView()
+struct ConversationListView_Previews: PreviewProvider {
+    static var previews: some View {
+        NavigationStack {
+            ConversationListView()
+        }
+        .environmentObject(AppState())
     }
-    .environmentObject(AppState())
 }

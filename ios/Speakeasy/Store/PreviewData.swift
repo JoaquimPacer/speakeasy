@@ -30,6 +30,7 @@ struct PreviewData {
         let contact = Contact(
             userID: currentUserID,
             contactID: contactID,
+            deviceID: contactDeviceID,
             username: "casey",
             nickname: "Casey",
             encryptionPublicKey: Data(repeating: 3, count: 32),
@@ -40,7 +41,9 @@ struct PreviewData {
         let sent = Message(
             id: UUID(uuidString: "C0000000-0000-0000-0000-000000000001")!,
             senderID: currentUserID,
+            senderDeviceID: currentDeviceID,
             recipientID: contactID,
+            recipientDeviceID: contactDeviceID,
             envelope: sampleEnvelope(senderDeviceID: currentDeviceID, recipientDeviceID: contactDeviceID, createdAt: now.addingTimeInterval(-3_600)),
             encryptedBlobPath: "messages/C0000000-0000-0000-0000-000000000001.blob",
             localEncryptedPackageURL: nil,
@@ -55,7 +58,9 @@ struct PreviewData {
         let received = Message(
             id: UUID(uuidString: "C0000000-0000-0000-0000-000000000002")!,
             senderID: contactID,
+            senderDeviceID: contactDeviceID,
             recipientID: currentUserID,
+            recipientDeviceID: currentDeviceID,
             envelope: sampleEnvelope(senderDeviceID: contactDeviceID, recipientDeviceID: currentDeviceID, createdAt: now.addingTimeInterval(-1_200)),
             encryptedBlobPath: "messages/C0000000-0000-0000-0000-000000000002.blob",
             localEncryptedPackageURL: nil,
@@ -98,6 +103,7 @@ struct PreviewData {
                 encryptedContentKey: Data(repeating: 6, count: 48),
                 recipientPublicKeyFingerprint: "preview"
             ),
+            senderContentKey: nil,
             createdAt: createdAt
         )
     }

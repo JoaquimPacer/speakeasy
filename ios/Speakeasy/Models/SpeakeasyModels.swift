@@ -28,6 +28,7 @@ struct Contact: Identifiable, Codable, Hashable {
 
     var userID: UUID
     var contactID: UUID
+    var deviceID: UUID
     var username: String
     var nickname: String?
     var encryptionPublicKey: Data
@@ -58,10 +59,13 @@ enum MessageDirection: String, Codable, Hashable {
 struct Message: Identifiable, Codable, Hashable {
     let id: UUID
     var senderID: UUID
+    var senderDeviceID: UUID?
     var recipientID: UUID
+    var recipientDeviceID: UUID?
     var envelope: MessageEnvelope
     var encryptedBlobPath: String?
     var localEncryptedPackageURL: URL?
+    var localThumbnailURL: URL? = nil
     var blobSize: Int
     var status: MessageStatus
     var deliveredAt: Date?
@@ -74,7 +78,7 @@ struct Message: Identifiable, Codable, Hashable {
             return .received
         }
 
-        senderID == currentUserID ? .sent : .received
+        return senderID == currentUserID ? MessageDirection.sent : MessageDirection.received
     }
 }
 
@@ -84,6 +88,7 @@ struct MessageEnvelope: Codable, Hashable {
     var recipientDeviceID: UUID
     var media: EncryptedMediaDescriptor
     var contentKey: ContentKeyEnvelope
+    var senderContentKey: ContentKeyEnvelope?
     var createdAt: Date
 }
 

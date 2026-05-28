@@ -5,7 +5,7 @@ automation, App Store Connect uploads, APNs validation, and TestFlight delivery
 must wait until the owner setup checklist has non-secret status entries and the
 real secrets are stored in GitHub Actions or Xcode Cloud.
 
-## Current Workflow
+## Current Workflows
 
 `.github/workflows/server-ci.yml` runs on pull requests and pushes to `main`
 when server, Compose, or workflow files change. It also supports manual
@@ -28,6 +28,11 @@ When the server scaffold lands, the same workflow will start running:
 - `docker compose config`
 - `docker build -t speakeasy-server:ci server`
 
+`.github/workflows/ios-ci.yml` runs on pull requests and pushes to `main` when
+iOS files or the workflow change. It performs an unsigned simulator build of the
+`Kithra` scheme, resolves the pinned Swift-Sodium package from
+`Package.resolved`, and does not require Apple signing secrets.
+
 ## Server CI Expansion
 
 Add server checks in small steps as implementation lands:
@@ -44,9 +49,8 @@ PR should be able to prove server correctness without access to owner accounts.
 
 ## iOS CI Options
 
-There is no iOS workflow yet because the native app scaffold, bundle ID, and
-Apple Developer setup are not complete. The first iOS CI step should be an
-unsigned simulator build/test job.
+The first iOS workflow is an unsigned simulator build. Add tests to the same
+workflow once the app has XCTest targets.
 
 ### GitHub Actions macOS
 
@@ -56,10 +60,10 @@ simulator builds with code signing disabled:
 
 ```bash
 xcodebuild test \
-  -project ios/Speakeasy.xcodeproj \
-  -scheme Speakeasy \
+  -project ios/Kithra.xcodeproj \
+  -scheme Kithra \
   -sdk iphonesimulator \
-  -destination 'platform=iOS Simulator,name=iPhone 16' \
+  -destination 'generic/platform=iOS Simulator' \
   CODE_SIGNING_ALLOWED=NO
 ```
 

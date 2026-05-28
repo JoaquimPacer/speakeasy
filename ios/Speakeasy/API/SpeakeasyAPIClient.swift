@@ -17,7 +17,12 @@ enum APIClientError: Error, LocalizedError {
             return "The relay base URL is invalid."
         case .invalidResponse:
             return "The relay returned a non-HTTP response."
-        case .serverStatus(let statusCode, _):
+        case .serverStatus(let statusCode, let data):
+            let serverMessage = String(data: data, encoding: .utf8)?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if let serverMessage, !serverMessage.isEmpty {
+                return "The relay returned HTTP \(statusCode): \(serverMessage)"
+            }
             return "The relay returned HTTP \(statusCode)."
         case .missingAuthToken:
             return "This endpoint requires an authenticated session."
@@ -101,18 +106,56 @@ actor SpeakeasyAPIClient {
         try await send(path: "/contacts", method: .get, requiresAuth: true)
     }
 
+    func deleteContact(contactID: UUID) async throws {
+        let _: EmptyResponse = try await send(
+            path: "/contacts/\(contactID.uuidString)",
+            method: .delete,
+            requiresAuth: true
+        )
+    }
+
+    func blockContact(contactID: UUID) async throws {
+        let payload = BlockContactRequest(blockedUserID: contactID)
+        let _: EmptyResponse = try await send(
+            path: "/blocks",
+            method: .post,
+            body: payload,
+            requiresAuth: true
+        )
+    }
+
+    func reportContact(contactID: UUID, reason: String, details: String = "") async throws {
+        let payload = ReportContactRequest(
+            reportedUserID: contactID,
+            messageID: nil,
+            reason: reason,
+            details: details
+        )
+        let _: EmptyResponse = try await send(
+            path: "/reports",
+            method: .post,
+            body: payload,
+            requiresAuth: true
+        )
+    }
+
     func listMessages() async throws -> [Message] {
-        try await send(path: "/messages", method: .get, requiresAuth: true)
+        let request = try makeRequest(path: "/messages", method: .get, requiresAuth: true)
+        let (data, response) = try await session.data(for: request)
+        try validate(response: response, data: data)
+        return try decodeLossyArray(Message.self, from: data)
     }
 
     func uploadMessage(
         recipientID: UUID,
+        recipientDeviceID: UUID,
         envelope: MessageEnvelope,
         encryptedBlobFileURL: URL,
         blobSize: Int
     ) async throws -> Message {
         let metadata = UploadMessageMetadata(
             recipientID: recipientID,
+            recipientDeviceID: recipientDeviceID,
             envelope: envelope,
             blobSize: blobSize
         )
@@ -160,6 +203,14 @@ actor SpeakeasyAPIClient {
         )
     }
 
+    func deleteAccount() async throws {
+        let _: EmptyResponse = try await send(
+            path: "/account",
+            method: .delete,
+            requiresAuth: true
+        )
+    }
+
     private func send<Response: Decodable>(
         path: String,
         method: HTTPMethod,
@@ -198,7 +249,6 @@ actor SpeakeasyAPIClient {
         var body = Data()
         try body.appendMultipartJSONPart(
             name: "metadata",
-            filename: "metadata.json",
             value: metadata,
             encoder: encoder,
             boundary: boundary
@@ -253,6 +303,18 @@ actor SpeakeasyAPIClient {
 
         return try decoder.decode(type, from: data)
     }
+
+    private func decodeLossyArray<Value: Decodable>(_ type: Value.Type, from data: Data) throws -> [Value] {
+        try decoder.decode([LossyDecodable<Value>].self, from: data).compactMap(\.value)
+    }
+}
+
+private struct LossyDecodable<Value: Decodable>: Decodable {
+    let value: Value?
+
+    init(from decoder: Decoder) throws {
+        value = try? Value(from: decoder)
+    }
 }
 
 private struct RegisterRequest: Encodable {
@@ -280,8 +342,20 @@ private struct AcceptContactInviteRequest: Encodable {
     var code: String
 }
 
+private struct BlockContactRequest: Encodable {
+    var blockedUserID: UUID
+}
+
+private struct ReportContactRequest: Encodable {
+    var reportedUserID: UUID
+    var messageID: UUID?
+    var reason: String
+    var details: String
+}
+
 private struct UploadMessageMetadata: Encodable {
     var recipientID: UUID
+    var recipientDeviceID: UUID
     var envelope: MessageEnvelope
     var blobSize: Int
 }
@@ -293,13 +367,12 @@ private struct UpdateMessageStatusRequest: Encodable {
 private extension Data {
     mutating func appendMultipartJSONPart<T: Encodable>(
         name: String,
-        filename: String,
         value: T,
         encoder: JSONEncoder,
         boundary: String
     ) throws {
         appendString("--\(boundary)\r\n")
-        appendString("Content-Disposition: form-data; name=\"\(name)\"; filename=\"\(filename)\"\r\n")
+        appendString("Content-Disposition: form-data; name=\"\(name)\"\r\n")
         appendString("Content-Type: application/json\r\n\r\n")
         append(try encoder.encode(value))
         appendString("\r\n")

@@ -64,28 +64,28 @@ to store each secret safely.
   - Test account instructions:
   - Beta description:
   - Contact email:
-  - Status:
+  - Status: Draft beta description, tester checklist, and App Review notes are in `docs/TESTFLIGHT_NOTES.md`.
 
 ## DNS And Relay Hosting
 
 - [ ] Choose the API subdomain.
   - Placeholder: `api.yourdomain.com`
-  - Final subdomain:
-  - Status:
-- [ ] Set up local Docker relay for development.
-  - Status: Docker CLI and Compose are installed, but on 2026-05-21 Docker daemon was not running and Docker reported it could not read `C:\Users\f927g\.docker\config.json`.
+  - Final subdomain: `api.joaquimpacer.com`
+  - Status: Chosen on 2026-05-27. DigitalOcean DNS `A` record points to `137.184.80.178`.
+- [x] Set up local Docker relay for development.
+  - Status: Verified on Mac on 2026-05-21 with Docker Desktop 4.74.0, Docker Engine 29.4.3, and Docker Compose v5.1.4. `docker compose up --build -d` starts the relay and `/healthz` returns `ok`.
 - [ ] Set up Linux laptop relay for private beta.
   - Docker installed:
   - Persistent storage path:
   - Automatic sleep disabled:
-  - Status:
+  - Status: Skipped for now in favor of the existing DigitalOcean Droplet.
 - [ ] Set up HTTPS tunnel for private beta.
   - Preferred: Cloudflare Tunnel or equivalent.
   - Public hostname:
-  - Status:
+  - Status: Skipped for now; Apache on the DigitalOcean Droplet will terminate HTTPS directly.
 - [ ] Decide if/when to move to DigitalOcean.
   - Default: defer until uptime or App Review needs require it.
-  - Status:
+  - Status: Existing DigitalOcean Droplet `joaquimpacer-wp` is now the beta relay host. Relay is running locally behind Apache and public HTTPS health checks pass at `https://api.joaquimpacer.com/healthz`.
 
 ## GitHub And CI
 
@@ -94,8 +94,8 @@ to store each secret safely.
 - [ ] Choose CI provider.
   - Default: GitHub Actions macOS.
   - Alternative: Xcode Cloud after Apple enrollment.
-  - Final choice:
-  - Status:
+  - Final choice: GitHub Actions for secret-free PR checks; Xcode Cloud can be revisited for TestFlight upload/signing.
+  - Status: Initial server and unsigned iOS simulator workflows exist; upload/signing workflows remain deferred until they consume stored CI secrets.
 - [ ] Add CI secrets only after the workflow exists.
   - Status:
 
@@ -103,18 +103,18 @@ to store each secret safely.
 
 - [ ] Draft privacy policy.
   - Must disclose metadata and encrypted content storage accurately.
-  - Status:
+  - Status: Draft is in `docs/PRIVACY_POLICY_DRAFT.md`.
 - [ ] Draft support URL/page.
-  - Status:
+  - Status: Draft is in `docs/SUPPORT_PAGE_DRAFT.md`.
 - [ ] Add in-app account deletion before public review.
-  - Status:
+  - Status: Initial authenticated delete-account endpoint and iOS Settings flow added on 2026-05-27. Needs end-to-end real-device verification against the beta HTTPS relay before App Review.
 - [ ] Prepare App Privacy labels.
   - Status:
 - [ ] Prepare encryption export compliance answers.
   - Status:
-- [ ] Implement block/report controls.
+- [x] Implement block/report controls.
   - Reports are metadata-only. Do not send decrypted videos to the operator.
-  - Status:
+  - Status: Initial iOS contact-row actions and relay endpoints added on 2026-05-27. Delete removes the contact from the current user's list, block removes the contact and prevents future uploads from the blocked user, and report stores metadata only.
 
 ## Later Google Play / Android V2
 

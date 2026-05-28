@@ -9,6 +9,8 @@ the implementation roadmap.
 - `docs/BUILD_PLAN.md` tracks product decisions, current status, roadmap, and
   what a new agent should read before changing code.
 - `docs/OWNER_SETUP.md` tracks account setup using non-secret status notes.
+- `docs/MAC_SETUP.md` tracks the local Mac toolchain setup for Xcode, Go,
+  Docker Desktop, and unattended work sessions.
 - `docs/CI.md` tracks GitHub Actions, Xcode Cloud, and release automation.
 - `docs/DEPLOYMENT.md` tracks local relay, laptop beta relay, tunnel, and VPS
   deployment.
@@ -241,8 +243,10 @@ The shortest path to useful unattended work is:
 
 Current practical blockers to long unattended implementation:
 
-- Go is needed for direct Windows server tests unless tests run through Docker.
-- Xcode/macOS is needed for real iOS build/simulator verification.
-- Docker must be able to build images and run Compose without local config
-  permission errors.
+- Full simulator/device UI exercise still needs a booted simulator or physical
+  iPhone interaction; unsigned command-line iOS builds are passing.
+- Auth login/token restore after app restart is not implemented yet; local
+  registration works for the active app session.
+- TestFlight still requires Apple signing/deployment setup after local MVP flow
+  is usable.
 - GitHub/Xcode CI secrets are needed only after upload/signing workflows exist.

@@ -2,7 +2,7 @@ import SwiftUI
 
 @main
 struct SpeakeasyApp: App {
-    @StateObject private var appState = AppState()
+    @StateObject private var appState = AppState(seedPreviewData: false)
 
     var body: some Scene {
         WindowGroup {
@@ -11,4 +11,3 @@ struct SpeakeasyApp: App {
         }
     }
 }
-

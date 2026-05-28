@@ -12,6 +12,8 @@
 	<string>6.0</string>
 	<key>CFBundleName</key>
 	<string>Kithra</string>
+	<key>KithraDefaultRelayURL</key>
+	<string>$(KITHRA_DEFAULT_RELAY_URL)</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
@@ -24,11 +26,22 @@
 	<string>Kithra uses the camera to record encrypted video messages.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Kithra uses the microphone to include audio in encrypted video messages.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>Kithra can pick a video for encryption when the camera is unavailable.</string>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Kithra can connect to a self-hosted relay on your local network.</string>
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsLocalNetworking</key>
+		<true/>
+	</dict>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>
 		<false/>
 	</dict>
+	<key>UIRequiresFullScreen</key>
+	<true/>
 	<key>UILaunchScreen</key>
 	<dict/>
 	<key>UISupportedInterfaceOrientations</key>
