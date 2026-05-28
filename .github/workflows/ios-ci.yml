@@ -1,0 +1,48 @@
+name: iOS CI
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/ios-ci.yml"
+      - "ios/**"
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/ios-ci.yml"
+      - "ios/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ios-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ios:
+    name: Unsigned simulator build
+    runs-on: macos-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Show Xcode version
+        run: xcodebuild -version
+
+      - name: List Kithra project
+        run: xcodebuild -list -project ios/Kithra.xcodeproj
+
+      - name: Build Kithra for iOS Simulator
+        run: |
+          xcodebuild build \
+            -project ios/Kithra.xcodeproj \
+            -scheme Kithra \
+            -configuration Debug \
+            -sdk iphonesimulator \
+            -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath "$RUNNER_TEMP/KithraDerivedData" \
+            CODE_SIGNING_ALLOWED=NO
