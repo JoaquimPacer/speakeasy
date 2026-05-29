@@ -26,6 +26,9 @@ constraints.
 - Out of V1: Android, groups, monetization, web client, key backup/recovery,
   full Signal-style forward secrecy.
 - Android is a V2 client; keep API and crypto envelope platform-neutral.
+- Android lane has started as a native Kotlin client under `android/`; maintain
+  cross-platform parity with iOS by sharing API/crypto contracts and test
+  checklists, not by sharing UI code.
 - Collaboration: small PRs with Joshua credited and CODEOWNERS review preserved.
 - Local dev relay: Docker on local machine or Linux laptop.
 - Private beta relay: Linux laptop through Cloudflare Tunnel or equivalent HTTPS
@@ -237,6 +240,12 @@ blockers, and unverified assumptions.
   Store Connect for TestFlight processing. Verification passed for server tests,
   public beta relay `/healthz`, icon asset dimensions, `git diff --check`, and
   installing/launching the refreshed no-play-button build on the physical iPhone.
+- 2026-05-28: Android/Google Play lane started while iOS TestFlight review is
+  pending. Installed JDK 21, Android command-line tools, Android SDK API 36, and
+  Gradle on the Mac. Added a native Kotlin Android scaffold under `android/`
+  with package `com.joaquimpacer.kithra`, a release plan in
+  `docs/GOOGLE_PLAY_RELEASE.md`, and Android CI. Local Android debug APK and
+  release `.aab` bundle builds passed.
 
 ## Open Placeholders
 

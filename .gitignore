@@ -39,6 +39,7 @@ cloudflared/*.pem
 
 # Dependencies
 node_modules/
+.gradle/
 
 # Build outputs
 dist/
@@ -75,3 +76,10 @@ ios/build/
 *.xcarchive/
 *.xcodeproj/xcuserdata/
 *.xcworkspace/xcuserdata/
+
+# Android
+android/.gradle/
+android/local.properties
+android/**/build/
+*.apk
+*.aab

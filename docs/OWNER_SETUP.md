@@ -119,11 +119,15 @@ to store each secret safely.
 ## Later Google Play / Android V2
 
 - [ ] Create Google Play Console developer account.
-  - Status:
-- [ ] Plan Android Kotlin client.
+  - Status: Needed before a Google Play internal test upload.
+- [x] Plan Android Kotlin client.
   - CameraX, Android Keystore, libsodium binding, FCM push.
-  - Status:
+  - Status: Native Android lane started on 2026-05-28. A Kotlin Android
+    scaffold exists under `android/`, builds locally, and has Android CI. Full
+    iOS feature parity is not implemented yet.
 - [ ] Prepare Play Data Safety and account deletion requirements.
   - Status:
 - [ ] Plan closed testing requirements before production release.
-  - Status:
+  - Status: Google Play internal testing can be used for early trusted testers;
+    production access requirements depend on the Play Console account type and
+    current Google policy.
