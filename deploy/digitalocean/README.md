@@ -10,6 +10,7 @@ Current beta status:
 - Relay path: `/srv/speakeasy/current`
 - Persistent data path: `/srv/speakeasy/data`
 - Public health check: `https://api.joaquimpacer.com/healthz`
+- Public site: `https://kithra.joaquimpacer.com`
 - TLS: Let's Encrypt through Certbot/Apache, auto-renewal scheduled by Certbot.
 
 This deployment keeps the Go relay bound to localhost on the VPS and puts the
