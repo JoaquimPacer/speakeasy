@@ -1,6 +1,7 @@
 # DigitalOcean Beta Relay
 
 Target hostname: `https://api.joaquimpacer.com`
+Public app/support site: `https://kithra.joaquimpacer.com`
 
 Current beta status:
 
@@ -24,10 +25,18 @@ Create an `A` record in Network Solutions:
 - Value: the existing DigitalOcean Droplet public IPv4 address
 - TTL: default or 300 seconds
 
+For the public Kithra app/support site, create another `A` record:
+
+- Host/name: `kithra`
+- Type: `A`
+- Value: the existing DigitalOcean Droplet public IPv4 address
+- TTL: default or 300 seconds
+
 After DNS propagates:
 
 ```bash
 dig +short api.joaquimpacer.com
+dig +short kithra.joaquimpacer.com
 ```
 
 ## VPS Layout
@@ -75,18 +84,49 @@ sudo apache2ctl configtest
 sudo systemctl reload apache2
 ```
 
+## Static Kithra Site
+
+The app/support/privacy site is static HTML and can be served by Apache on the
+same Droplet as the relay and the existing website.
+
+Copy the site files to:
+
+```text
+/var/www/kithra
+```
+
+Copy `apache-kithra.joaquimpacer.com.conf` to:
+
+```text
+/etc/apache2/sites-available/kithra.joaquimpacer.com.conf
+```
+
+Enable it:
+
+```bash
+sudo mkdir -p /var/www/kithra
+sudo rsync -a deploy/digitalocean/kithra-site/ /var/www/kithra/
+sudo chown -R www-data:www-data /var/www/kithra
+sudo a2ensite kithra.joaquimpacer.com.conf
+sudo apache2ctl configtest
+sudo systemctl reload apache2
+```
+
 ## HTTPS
 
 Use Certbot with the Apache plugin after DNS resolves:
 
 ```bash
 sudo certbot --apache -d api.joaquimpacer.com
+sudo certbot --apache -d kithra.joaquimpacer.com
 ```
 
 Then verify:
 
 ```bash
 curl -fsS https://api.joaquimpacer.com/healthz
+curl -fsS https://kithra.joaquimpacer.com/
+curl -fsS https://kithra.joaquimpacer.com/privacy.html
 ```
 
 ## iOS Release Config
