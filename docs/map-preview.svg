@@ -1,0 +1,67 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1192" height="710" viewBox="0 0 1192 710">
+<rect x="0" y="0" width="1192" height="710" fill="#ffffff"/>
+<text x="30" y="50.4" font-family="'Segoe UI', Arial, sans-serif" font-size="24" fill="#1c1913">speakeasy (Kithra): the spec repo behind the app</text>
+<text x="30" y="74.2" font-family="Consolas, 'Courier New', monospace" font-size="12" fill="#6f6a59">verified 2026-07-16 · text twin that stays current: docs/REPO_MAP.md</text>
+<polyline points="750,50 790,50" fill="none" stroke="#7a4a21" stroke-width="2"/>
+<text x="798" y="52.2" font-family="'Segoe UI', Arial, sans-serif" font-size="12" fill="#55503f">how the app gets made</text>
+<polyline points="980,50 1020,50" fill="none" stroke="#7a4a21" stroke-width="2" stroke-dasharray="8 6"/>
+<text x="1028" y="52.2" font-family="'Segoe UI', Arial, sans-serif" font-size="12" fill="#55503f">runtime path (E2E)</text>
+<rect x="30" y="100" width="300" height="340" rx="8" fill="#f4f0e8" stroke="#8a8471" stroke-width="1" stroke-dasharray="8 6"/>
+<text x="44" y="121.9" font-family="Consolas, 'Courier New', monospace" font-size="14" fill="#6f6a59">THE PAPER (THIS REPO)</text>
+<rect x="420" y="100" width="260" height="340" rx="8" fill="#eef1f6" stroke="#8a8471" stroke-width="1" stroke-dasharray="8 6"/>
+<text x="434" y="121.9" font-family="Consolas, 'Courier New', monospace" font-size="14" fill="#6f6a59">THE BUILD</text>
+<rect x="770" y="100" width="320" height="340" rx="8" fill="#f1ece5" stroke="#8a8471" stroke-width="1" stroke-dasharray="8 6"/>
+<text x="784" y="121.9" font-family="Consolas, 'Courier New', monospace" font-size="14" fill="#6f6a59">WHAT PEOPLE GET</text>
+<rect x="30" y="490" width="1060" height="190" rx="8" fill="#f2efe9" stroke="#8a8471" stroke-width="1" stroke-dasharray="8 6"/>
+<text x="44" y="511.9" font-family="Consolas, 'Courier New', monospace" font-size="14" fill="#6f6a59">REFERENCE</text>
+<rect x="50" y="150" width="260" height="100" rx="8" fill="#ffffff" stroke="#1c1913" stroke-width="1"/>
+<text x="62" y="172.75" font-family="'Segoe UI', Arial, sans-serif" font-size="15" fill="#1c1913">README.md</text>
+<text x="62" y="194.2" font-family="'Segoe UI', Arial, sans-serif" font-size="12" fill="#55503f">the public pitch: the</text>
+<text x="62" y="209.79999999999998" font-family="'Segoe UI', Arial, sans-serif" font-size="12" fill="#55503f">comparison table nobody</text>
+<text x="62" y="225.39999999999998" font-family="'Segoe UI', Arial, sans-serif" font-size="12" fill="#55503f">else can fill</text>
+<rect x="50" y="300" width="260" height="110" rx="8" fill="#ffffff" stroke="#1c1913" stroke-width="1"/>
+<text x="62" y="322.75" font-family="'Segoe UI', Arial, sans-serif" font-size="15" fill="#1c1913">docs/</text>
+<text x="62" y="344.2" font-family="'Segoe UI', Arial, sans-serif" font-size="12" fill="#55503f">SPEC (MVP), ARCHITECTURE</text>
+<text x="62" y="359.8" font-family="'Segoe UI', Arial, sans-serif" font-size="12" fill="#55503f">(Go relay + Swift app),</text>
+<text x="62" y="375.4" font-family="'Segoe UI', Arial, sans-serif" font-size="12" fill="#55503f">SECURITY (crypto model)</text>
+<rect x="440" y="200" width="220" height="120" rx="8" fill="#ffffff" stroke="#1c1913" stroke-width="1"/>
+<text x="452" y="222.75" font-family="'Segoe UI', Arial, sans-serif" font-size="15" fill="#1c1913">Kithra build (Mac)</text>
+<text x="452" y="244.2" font-family="'Segoe UI', Arial, sans-serif" font-size="12" fill="#55503f">coded from these docs</text>
+<text x="452" y="259.8" font-family="'Segoe UI', Arial, sans-serif" font-size="12" fill="#55503f">with Codex; lands here</text>
+<text x="452" y="275.4" font-family="'Segoe UI', Arial, sans-serif" font-size="12" fill="#55503f">when ready</text>
+<rect x="795" y="150" width="270" height="110" rx="8" fill="#7a4a21" stroke="#7a4a21" stroke-width="1"/>
+<text x="807" y="172.75" font-family="'Segoe UI', Arial, sans-serif" font-size="15" fill="#ffffff">Kithra iOS app</text>
+<text x="807" y="194.2" font-family="'Segoe UI', Arial, sans-serif" font-size="12" fill="#f0e6db">Swift + libsodium; encrypts</text>
+<text x="807" y="209.79999999999998" font-family="'Segoe UI', Arial, sans-serif" font-size="12" fill="#f0e6db">on the device; App Store</text>
+<text x="807" y="225.39999999999998" font-family="'Segoe UI', Arial, sans-serif" font-size="12" fill="#f0e6db">submit due Jul 24</text>
+<rect x="795" y="340" width="270" height="80" rx="8" fill="#ffffff" stroke="#1c1913" stroke-width="1"/>
+<text x="807" y="362.75" font-family="'Segoe UI', Arial, sans-serif" font-size="15" fill="#1c1913">Go relay server</text>
+<text x="807" y="384.2" font-family="'Segoe UI', Arial, sans-serif" font-size="12" fill="#55503f">self-hosted dumb relay;</text>
+<text x="807" y="399.8" font-family="'Segoe UI', Arial, sans-serif" font-size="12" fill="#55503f">sees only sealed blobs</text>
+<rect x="60" y="535" width="240" height="110" rx="8" fill="#ffffff" stroke="#1c1913" stroke-width="1"/>
+<text x="72" y="557.75" font-family="'Segoe UI', Arial, sans-serif" font-size="15" fill="#1c1913">LICENSE + .gitignore</text>
+<text x="72" y="579.2" font-family="'Segoe UI', Arial, sans-serif" font-size="12" fill="#55503f">MIT; secrets/ stays local</text>
+<text x="72" y="594.8000000000001" font-family="'Segoe UI', Arial, sans-serif" font-size="12" fill="#55503f">(git exclude), never staged</text>
+<rect x="340" y="535" width="240" height="110" rx="8" fill="#ffffff" stroke="#1c1913" stroke-width="1"/>
+<text x="352" y="557.75" font-family="'Segoe UI', Arial, sans-serif" font-size="15" fill="#1c1913">archive/</text>
+<text x="352" y="579.2" font-family="'Segoe UI', Arial, sans-serif" font-size="12" fill="#55503f">CODEOWNERS from the collab</text>
+<text x="352" y="594.8000000000001" font-family="'Segoe UI', Arial, sans-serif" font-size="12" fill="#55503f">era; Joshua moved on 2026-07</text>
+<rect x="620" y="535" width="250" height="110" rx="8" fill="#ffffff" stroke="#1c1913" stroke-width="1"/>
+<text x="632" y="557.75" font-family="'Segoe UI', Arial, sans-serif" font-size="15" fill="#1c1913">this file</text>
+<text x="632" y="579.2" font-family="'Segoe UI', Arial, sans-serif" font-size="12" fill="#55503f">speakeasy-map.excalidraw;</text>
+<text x="632" y="594.8000000000001" font-family="'Segoe UI', Arial, sans-serif" font-size="12" fill="#55503f">regenerate via docs/</text>
+<text x="632" y="610.4000000000001" font-family="'Segoe UI', Arial, sans-serif" font-size="12" fill="#55503f">make-repo-map.mjs</text>
+<polyline points="310,310 440,310" fill="none" stroke="#7a4a21" stroke-width="2"/>
+<polygon points="440,310 428,315 428,305" fill="#7a4a21"/>
+<rect x="345.4" y="300" width="59.2" height="20" rx="8" fill="#ffffff" stroke="#c9c3b4" stroke-width="1"/>
+<text x="353.4" y="313.35" font-family="Consolas, 'Courier New', monospace" font-size="11" fill="#1c1913">guides</text>
+<polyline points="660,230 795,230" fill="none" stroke="#7a4a21" stroke-width="2"/>
+<polygon points="795,230 783,235 783,225" fill="#7a4a21"/>
+<rect x="697.9" y="220" width="59.2" height="20" rx="8" fill="#ffffff" stroke="#c9c3b4" stroke-width="1"/>
+<text x="705.9" y="233.35" font-family="Consolas, 'Courier New', monospace" font-size="11" fill="#1c1913">builds</text>
+<polyline points="930,260 930,340" fill="none" stroke="#7a4a21" stroke-width="2" stroke-dasharray="8 6"/>
+<polygon points="930,340 925,328 935,328" fill="#7a4a21"/>
+<rect x="900.4" y="283" width="59.2" height="34" rx="8" fill="#ffffff" stroke="#c9c3b4" stroke-width="1"/>
+<text x="908.4" y="296.35" font-family="Consolas, 'Courier New', monospace" font-size="11" fill="#1c1913">sealed</text>
+<text x="912" y="310.35" font-family="Consolas, 'Courier New', monospace" font-size="11" fill="#1c1913">blobs</text>
+</svg>
