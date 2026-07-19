@@ -1,0 +1,173 @@
+require "shellwords"
+
+opt_out_usage
+default_platform(:ios)
+
+APP_IDENTIFIER = "com.joaquimpacer.speakeasy"
+DEVELOPER_TEAM_ID = "Y45XWD5PRV"
+INTERNAL_TESTFLIGHT_GROUP = "Kithra Internal"
+REPOSITORY_ROOT = File.expand_path("../..", __dir__)
+XCODE_PROJECT = File.expand_path("../Kithra.xcodeproj", __dir__)
+BUILD_OUTPUT_DIRECTORY = File.expand_path("../build", __dir__)
+DEFAULT_KEY_ID_PATH = File.join(
+  REPOSITORY_ROOT,
+  "secrets/app-store-connect/key-id.txt"
+)
+DEFAULT_ISSUER_ID_PATH = File.join(
+  REPOSITORY_ROOT,
+  "secrets/app-store-connect/issuer-id.txt"
+)
+
+def app_store_connect_credentials
+  key_id = ENV["APP_STORE_CONNECT_KEY_ID"]&.strip
+  if key_id.to_s.empty?
+    key_id_path = File.expand_path(
+      ENV.fetch("APP_STORE_CONNECT_KEY_ID_PATH", DEFAULT_KEY_ID_PATH)
+    )
+    unless File.file?(key_id_path)
+      UI.user_error!(
+        "Missing App Store Connect Key ID. Set APP_STORE_CONNECT_KEY_ID " \
+        "or create #{key_id_path}"
+      )
+    end
+    key_id = File.read(key_id_path).strip
+  end
+  UI.user_error!("App Store Connect Key ID is empty") if key_id.empty?
+
+  default_api_key_path = File.join(
+    REPOSITORY_ROOT,
+    "secrets/app-store-connect/AuthKey_#{key_id}.p8"
+  )
+  key_path = File.expand_path(
+    ENV.fetch("APP_STORE_CONNECT_API_KEY_PATH", default_api_key_path)
+  )
+  UI.user_error!("Missing App Store Connect API key at #{key_path}") unless File.file?(key_path)
+
+  issuer_id = ENV["APP_STORE_CONNECT_ISSUER_ID"]&.strip
+  if issuer_id.to_s.empty?
+    issuer_id_path = File.expand_path(
+      ENV.fetch("APP_STORE_CONNECT_ISSUER_ID_PATH", DEFAULT_ISSUER_ID_PATH)
+    )
+    unless File.file?(issuer_id_path)
+      UI.user_error!(
+        "Missing App Store Connect Issuer ID. Set APP_STORE_CONNECT_ISSUER_ID " \
+        "or create #{issuer_id_path}"
+      )
+    end
+    issuer_id = File.read(issuer_id_path).strip
+  end
+  UI.user_error!("App Store Connect Issuer ID is empty") if issuer_id.empty?
+
+  {
+    issuer_id: issuer_id,
+    key_id: key_id,
+    key_filepath: key_path
+  }
+end
+
+platform :ios do
+  desc "Build and upload an internal-only Kithra build to TestFlight"
+  lane :beta do
+    credentials = app_store_connect_credentials
+    api_key = app_store_connect_api_key(
+      issuer_id: credentials[:issuer_id],
+      key_id: credentials[:key_id],
+      key_filepath: credentials[:key_filepath],
+      duration: 1200,
+      in_house: false
+    )
+
+    app_version = get_version_number(
+      xcodeproj: XCODE_PROJECT,
+      target: "Kithra"
+    )
+    latest_uploaded_build = latest_testflight_build_number(
+      api_key: api_key,
+      app_identifier: APP_IDENTIFIER,
+      version: app_version,
+      initial_build_number: 1
+    )
+    next_build_number = latest_uploaded_build.to_i + 1
+    increment_build_number(
+      build_number: next_build_number,
+      xcodeproj: XCODE_PROJECT
+    )
+
+    authentication_xcargs = [
+      "-allowProvisioningUpdates",
+      "-authenticationKeyPath #{Shellwords.escape(credentials[:key_filepath])}",
+      "-authenticationKeyID #{Shellwords.escape(credentials[:key_id])}",
+      "-authenticationKeyIssuerID #{Shellwords.escape(credentials[:issuer_id])}"
+    ].join(" ")
+
+    ipa_path = build_app(
+      project: XCODE_PROJECT,
+      scheme: "Kithra",
+      configuration: "Release",
+      clean: true,
+      output_directory: BUILD_OUTPUT_DIRECTORY,
+      output_name: "Kithra.ipa",
+      archive_path: File.join(BUILD_OUTPUT_DIRECTORY, "Kithra.xcarchive"),
+      export_method: "app-store",
+      export_options: {
+        manageAppVersionAndBuildNumber: false,
+        signingStyle: "automatic",
+        teamID: DEVELOPER_TEAM_ID,
+        testFlightInternalTestingOnly: true
+      },
+      export_team_id: DEVELOPER_TEAM_ID,
+      xcargs: authentication_xcargs
+    )
+
+    upload_to_testflight(
+      api_key: api_key,
+      app_identifier: APP_IDENTIFIER,
+      ipa: ipa_path,
+      groups: [INTERNAL_TESTFLIGHT_GROUP],
+      distribute_external: false,
+      notify_external_testers: false,
+      submit_beta_review: false,
+      skip_submission: false,
+      skip_waiting_for_build_processing: false,
+      wait_processing_interval: 30,
+      wait_processing_timeout_duration: 900
+    )
+
+    app = Spaceship::ConnectAPI::App.find(APP_IDENTIFIER)
+    uploaded_build = Spaceship::ConnectAPI::Build.all(
+      app_id: app.id,
+      version: app_version,
+      build_number: next_build_number.to_s,
+      limit: 1
+    ).first
+    UI.user_error!("Uploaded build could not be found in App Store Connect") unless uploaded_build
+
+    internal_group = app.get_beta_groups.find do |group|
+      group.name == INTERNAL_TESTFLIGHT_GROUP && group.is_internal_group
+    end
+    unless internal_group
+      UI.user_error!("Missing internal TestFlight group: #{INTERNAL_TESTFLIGHT_GROUP}")
+    end
+    unless internal_group.fetch_builds.any? { |build| build.id == uploaded_build.id }
+      UI.user_error!(
+        "Build #{next_build_number} reached TestFlight but was not attached to " \
+        "#{INTERNAL_TESTFLIGHT_GROUP}"
+      )
+    end
+
+    beta_detail = uploaded_build.build_beta_detail
+    missing_compliance_state = Spaceship::ConnectAPI::BuildBetaDetail::InternalState::MISSING_EXPORT_COMPLIANCE
+    compliance_states = [
+      beta_detail&.internal_build_state,
+      beta_detail&.external_build_state
+    ]
+    if compliance_states.include?(missing_compliance_state)
+      UI.user_error!("Build #{next_build_number} reached TestFlight but is missing export compliance")
+    end
+
+    UI.success(
+      "Kithra #{app_version} (#{next_build_number}) reached #{INTERNAL_TESTFLIGHT_GROUP} " \
+      "without Missing Compliance"
+    )
+  end
+end

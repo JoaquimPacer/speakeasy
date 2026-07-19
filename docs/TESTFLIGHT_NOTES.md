@@ -22,9 +22,13 @@ and routing metadata only.
 ## Pre-Invite Checklist
 
 - Confirm the uploaded build finished processing.
-- Open TestFlight build activity and clear `Missing Compliance` if present.
+- Confirm TestFlight build activity does not show `Missing Compliance`; the app
+  declares its documentation-exempt standard encryption in `Info.plist`.
 - Confirm an internal or external tester group has the processed build attached.
 - Send tester invites only after the build is visible in the selected group.
+
+Kithra 1.0 (build 2) was uploaded on July 19, 2026, processed without
+`Missing Compliance`, and attached to the `Kithra Internal` group.
 
 ## App Review Notes Draft
 

@@ -19,7 +19,16 @@
 	<key>CFBundleShortVersionString</key>
 	<string>1.0</string>
 	<key>CFBundleVersion</key>
-	<string>1</string>
+	<string>2</string>
+	<!--
+	Kithra's internal TestFlight distribution excludes France and uses only
+	published industry-standard cryptography via libsodium (X25519 and
+	XChaCha20-Poly1305), not proprietary algorithms. Apple therefore treats this
+	configuration as exempt from export-documentation submission. Re-evaluate
+	this value before adding France or changing the app's cryptography.
+	-->
+	<key>ITSAppUsesNonExemptEncryption</key>
+	<false/>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
 	<key>NSCameraUsageDescription</key>

@@ -12,6 +12,8 @@ tokens, Apple API keys, or server passwords in this file.
 - Second milestone: external TestFlight for Ohana and other invited testers.
 - Public App Store review comes after TestFlight proves the beta relay,
   onboarding, invite flow, send/receive, account deletion, and review metadata.
+- France is excluded from distribution. Revisit export documentation before
+  enabling France because Kithra bundles industry-standard libsodium encryption.
 
 ## Hosting Decision
 
@@ -87,14 +89,13 @@ Owner tasks:
 - Decide whether to use the existing DigitalOcean VPS or a new tiny Droplet.
 - Point the hostname through DNS or Cloudflare Tunnel.
 - After every first TestFlight upload for a version, open TestFlight build
-  activity and clear any `Missing Compliance` export-compliance prompt before
-  inviting testers. Kithra uses encryption, so answer the Apple questionnaire
-  accurately and record the final non-secret outcome here.
-- If Apple says no export documentation is required, add the corresponding
-  `ITSAppUsesNonExemptEncryption` value to `Info.plist` before the next upload.
-  If Apple requires and approves documentation, add the Apple-provided
-  `ITSEncryptionExportComplianceCode` value to `Info.plist` before the next
-  upload. Do not guess these values.
+  activity and confirm that it does not show `Missing Compliance` before
+  inviting testers. Kithra declares `ITSAppUsesNonExemptEncryption = false`
+  because it uses published industry-standard algorithms and excludes France.
+- Revisit export compliance before adding France, adding proprietary
+  cryptography, or changing the current crypto design. If Apple later requires
+  and approves documentation, replace the exemption with the Apple-provided
+  `ITSEncryptionExportComplianceCode` value.
 - Keep all VPS, Cloudflare, DNS, and Apple secrets out of chat.
 
 Codex tasks:
@@ -105,3 +106,27 @@ Codex tasks:
 - Draft privacy policy, support page, TestFlight notes, and App Review notes.
 - Verify server tests, simulator build, physical build, and `/healthz` before
   uploading to TestFlight.
+
+## One-Command Internal TestFlight Upload
+
+Fastlane is configured under `ios/fastlane/`. From the repository root, ship a
+new internal-only TestFlight build with:
+
+```sh
+cd ios && bundle exec fastlane beta
+```
+
+The lane reads the ignored App Store Connect Key ID from
+`secrets/app-store-connect/key-id.txt`, its private key from
+`secrets/app-store-connect/AuthKey_<KEY_ID>.p8`, and its Issuer ID from
+`secrets/app-store-connect/issuer-id.txt`. The values can instead be supplied
+with `APP_STORE_CONNECT_KEY_ID`, `APP_STORE_CONNECT_API_KEY_PATH`, and
+`APP_STORE_CONNECT_ISSUER_ID`.
+
+The lane finds the latest TestFlight build for the current marketing version,
+increments the build number, uses API-key-backed Xcode automatic signing,
+archives the Release configuration, uploads it, and waits for App Store Connect
+processing. It attaches the processed build to the `Kithra Internal` tester
+group. The exported build is marked `testFlightInternalTestingOnly`, and
+Fastlane is explicitly configured not to distribute externally or submit a beta
+review. Public App Store submission remains a separate manual owner action.

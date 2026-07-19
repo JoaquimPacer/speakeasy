@@ -77,6 +77,12 @@ ios/build/
 *.xcodeproj/xcuserdata/
 *.xcworkspace/xcuserdata/
 
+# Fastlane-generated reports and screenshots
+ios/fastlane/report.xml
+ios/fastlane/Preview.html
+ios/fastlane/screenshots/
+ios/fastlane/test_output/
+
 # Android
 android/.gradle/
 android/local.properties
