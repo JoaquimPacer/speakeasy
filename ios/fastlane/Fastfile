@@ -90,6 +90,7 @@ platform :ios do
     next_build_number = latest_uploaded_build.to_i + 1
     increment_build_number(
       build_number: next_build_number,
+      skip_info_plist: true,
       xcodeproj: XCODE_PROJECT
     )
 

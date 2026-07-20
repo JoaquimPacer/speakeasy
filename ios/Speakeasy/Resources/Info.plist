@@ -19,7 +19,7 @@
 	<key>CFBundleShortVersionString</key>
 	<string>1.0</string>
 	<key>CFBundleVersion</key>
-	<string>2</string>
+	<string>$(CURRENT_PROJECT_VERSION)</string>
 	<!--
 	Kithra's internal TestFlight distribution excludes France and uses only
 	published industry-standard cryptography via libsodium (X25519 and
