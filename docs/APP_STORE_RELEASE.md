@@ -12,6 +12,11 @@ tokens, Apple API keys, or server passwords in this file.
 - Second milestone: external TestFlight for Ohana and other invited testers.
 - Public App Store review comes after TestFlight proves the beta relay,
   onboarding, invite flow, send/receive, account deletion, and review metadata.
+- France must be excluded from public App Store sale availability. Internal
+  TestFlight groups are not country-scoped, so the release lane checks App Store
+  availability instead: it blocks if France is enabled and warns while sale
+  availability has not yet been configured. Revisit export documentation before
+  enabling France because Kithra bundles industry-standard libsodium encryption.
 
 ## Hosting Decision
 
@@ -86,15 +91,19 @@ Owner tasks:
 - Choose the beta API hostname.
 - Decide whether to use the existing DigitalOcean VPS or a new tiny Droplet.
 - Point the hostname through DNS or Cloudflare Tunnel.
-- After every first TestFlight upload for a version, open TestFlight build
-  activity and clear any `Missing Compliance` export-compliance prompt before
-  inviting testers. Kithra uses encryption, so answer the Apple questionnaire
-  accurately and record the final non-secret outcome here.
-- If Apple says no export documentation is required, add the corresponding
-  `ITSAppUsesNonExemptEncryption` value to `Info.plist` before the next upload.
-  If Apple requires and approves documentation, add the Apple-provided
-  `ITSEncryptionExportComplianceCode` value to `Info.plist` before the next
-  upload. Do not guess these values.
+- On the next TestFlight upload, expect `Missing Compliance`: Joaquim selected
+  the conservative `ITSAppUsesNonExemptEncryption = true` declaration so App
+  Store Connect presents its export-compliance questionnaire instead of
+  pre-answering it as exempt.
+- In App Store Connect, open the uploaded iOS build and choose **Provide Export
+  Compliance Information**. Do not invite testers or change the plist while the
+  answer is pending. Record the non-secret outcome in `docs/OWNER_SETUP.md`.
+- If Apple's outcome confirms that the bundled encryption is exempt, Joaquim can
+  make the final call to set `ITSAppUsesNonExemptEncryption = false` for future
+  builds. If Apple requires and approves documentation, keep the declaration
+  `true` and add only the Apple-issued `ITSEncryptionExportComplianceCode`.
+  Revisit the answer before adding France, proprietary cryptography, or changing
+  the current crypto design.
 - Keep all VPS, Cloudflare, DNS, and Apple secrets out of chat.
 
 Codex tasks:
@@ -105,3 +114,56 @@ Codex tasks:
 - Draft privacy policy, support page, TestFlight notes, and App Review notes.
 - Verify server tests, simulator build, physical build, and `/healthz` before
   uploading to TestFlight.
+
+## One-Command Internal TestFlight Upload
+
+Fastlane is configured under `ios/fastlane/`. From the repository root, ship a
+new internal-only TestFlight build with:
+
+```sh
+cd ios && bundle exec fastlane beta
+```
+
+The lane reads the ignored App Store Connect Key ID from
+`secrets/app-store-connect/key-id.txt`, its private key from
+`secrets/app-store-connect/AuthKey_<KEY_ID>.p8`, and its Issuer ID from
+`secrets/app-store-connect/issuer-id.txt`. The values can instead be supplied
+with `APP_STORE_CONNECT_KEY_ID`, `APP_STORE_CONNECT_API_KEY_PATH`, and
+`APP_STORE_CONNECT_ISSUER_ID`.
+
+The lane requires a clean working tree, finds the latest TestFlight build for
+the current marketing version, increments the build number, uses API-key-backed
+Xcode automatic signing, archives the Release configuration, and uploads the
+binary exactly once. After App Store Connect accepts the upload, it creates a
+local commit containing only the Xcode build-number bump; the lane never pushes
+that commit, so the operator must push it normally.
+
+Processing is checked separately from upload. Each check waits 30 minutes by
+default and may safely retry once without re-uploading; override the per-attempt
+limit with `TESTFLIGHT_PROCESSING_TIMEOUT_SECONDS`. A final timeout reports that
+the upload succeeded and directs the operator to resume rather than rerun
+`beta`.
+
+The next build intentionally stops before tester attachment when App Store
+Connect reports `Missing Compliance`. Joaquim must answer the build's export
+questionnaire in App Store Connect. After the build is cleared, resume that same
+upload with:
+
+```sh
+cd ios && bundle exec fastlane verify_beta
+```
+
+`verify_beta` waits for the selected uploaded build, reports App Store Connect's
+resolved `usesNonExemptEncryption` value, and only attaches the build to the
+`Kithra Internal` group after the compliance gate is clear. Pass
+`version:<version>` and
+`build_number:<number>` if the latest build is not the intended one. Both lanes
+remain internal-only: the exported build is marked
+`testFlightInternalTestingOnly`, external distribution and beta-review
+submission are disabled, and public App Store submission remains a separate
+manual owner action.
+
+Apple's references for this owner step are [Provide export compliance
+information for beta builds](https://developer.apple.com/help/app-store-connect/test-a-beta-version/provide-export-compliance-information-for-beta-builds/)
+and [Determine and upload app encryption
+documentation](https://developer.apple.com/help/app-store-connect/manage-app-information/determine-and-upload-app-encryption-documentation/).

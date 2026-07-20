@@ -1,0 +1,408 @@
+require "shellwords"
+
+opt_out_usage
+default_platform(:ios)
+
+INTERNAL_TESTFLIGHT_GROUP = "Kithra Internal"
+FRANCE_TERRITORY_ID = "FRA"
+REPOSITORY_ROOT = File.expand_path("../..", __dir__)
+XCODE_PROJECT = File.expand_path("../Kithra.xcodeproj", __dir__)
+XCODE_PROJECT_FILE = File.join(XCODE_PROJECT, "project.pbxproj")
+BUILD_OUTPUT_DIRECTORY = File.expand_path("../build", __dir__)
+DEFAULT_KEY_ID_PATH = File.join(
+  REPOSITORY_ROOT,
+  "secrets/app-store-connect/key-id.txt"
+)
+DEFAULT_ISSUER_ID_PATH = File.join(
+  REPOSITORY_ROOT,
+  "secrets/app-store-connect/issuer-id.txt"
+)
+
+def appfile_value(key)
+  value = CredentialsManager::AppfileConfig.try_fetch_value(key).to_s.strip
+  UI.user_error!("Missing #{key} in ios/fastlane/Appfile") if value.empty?
+  value
+end
+
+def testflight_processing_timeout
+  timeout = Integer(
+    ENV.fetch("TESTFLIGHT_PROCESSING_TIMEOUT_SECONDS", "1800"),
+    10
+  )
+  UI.user_error!("TESTFLIGHT_PROCESSING_TIMEOUT_SECONDS must be positive") unless timeout.positive?
+  timeout
+rescue ArgumentError
+  UI.user_error!("TESTFLIGHT_PROCESSING_TIMEOUT_SECONDS must be a positive integer")
+end
+
+def app_store_connect_credentials
+  key_id = ENV["APP_STORE_CONNECT_KEY_ID"]&.strip
+  if key_id.to_s.empty?
+    key_id_path = File.expand_path(
+      ENV.fetch("APP_STORE_CONNECT_KEY_ID_PATH", DEFAULT_KEY_ID_PATH)
+    )
+    unless File.file?(key_id_path)
+      UI.user_error!(
+        "Missing App Store Connect Key ID. Set APP_STORE_CONNECT_KEY_ID " \
+        "or create #{key_id_path}"
+      )
+    end
+    key_id = File.read(key_id_path).strip
+  end
+  UI.user_error!("App Store Connect Key ID is empty") if key_id.empty?
+
+  default_api_key_path = File.join(
+    REPOSITORY_ROOT,
+    "secrets/app-store-connect/AuthKey_#{key_id}.p8"
+  )
+  key_path = File.expand_path(
+    ENV.fetch("APP_STORE_CONNECT_API_KEY_PATH", default_api_key_path)
+  )
+  UI.user_error!("Missing App Store Connect API key at #{key_path}") unless File.file?(key_path)
+
+  issuer_id = ENV["APP_STORE_CONNECT_ISSUER_ID"]&.strip
+  if issuer_id.to_s.empty?
+    issuer_id_path = File.expand_path(
+      ENV.fetch("APP_STORE_CONNECT_ISSUER_ID_PATH", DEFAULT_ISSUER_ID_PATH)
+    )
+    unless File.file?(issuer_id_path)
+      UI.user_error!(
+        "Missing App Store Connect Issuer ID. Set APP_STORE_CONNECT_ISSUER_ID " \
+        "or create #{issuer_id_path}"
+      )
+    end
+    issuer_id = File.read(issuer_id_path).strip
+  end
+  UI.user_error!("App Store Connect Issuer ID is empty") if issuer_id.empty?
+
+  {
+    issuer_id: issuer_id,
+    key_id: key_id,
+    key_filepath: key_path
+  }
+end
+
+def find_app!(app_identifier)
+  app = Spaceship::ConnectAPI::App.find(app_identifier)
+  UI.user_error!("App Store Connect app not found: #{app_identifier}") unless app
+  app
+end
+
+def app_store_availability_resource(app)
+  client = Spaceship::ConnectAPI.client.tunes_request_client
+  response = client.get("v1/apps/#{app.id}/appAvailabilityV2")
+  response.body["data"]
+rescue Spaceship::UnexpectedResponse => error
+  message = error.message.downcase
+  no_availability = message.include?("no resource") &&
+                    message.include?("appavailabilities")
+  return nil if no_availability
+
+  raise
+end
+
+def ensure_france_excluded!(app)
+  availability = app_store_availability_resource(app)
+  unless availability
+    UI.important(
+      "App Store sale availability is not configured yet, so the lane cannot " \
+      "verify that France is excluded. This internal-only TestFlight upload may " \
+      "continue, but configure specific App Store countries without France before " \
+      "public distribution."
+    )
+    return
+  end
+
+  client = Spaceship::ConnectAPI.client.tunes_request_client
+  params = client.build_params(includes: "territory", limit: 200)
+  responses = client.get(
+    "v2/appAvailabilities/#{availability.fetch("id")}/territoryAvailabilities",
+    params
+  ).all_pages
+  territories = responses.flat_map { |response| response.body.fetch("data", []) }
+  france = territories.find do |territory|
+    territory.dig("relationships", "territory", "data", "id") == FRANCE_TERRITORY_ID
+  end
+  UI.user_error!("Could not verify France in App Store sale availability") unless france
+
+  france_available = france.dig("attributes", "available")
+  unless france_available == true || france_available == false
+    UI.user_error!("App Store Connect returned an unknown France availability value")
+  end
+  if france_available
+    UI.user_error!(
+      "France is enabled in App Store sale availability. Disable France before " \
+      "running the release lane."
+    )
+  end
+
+  UI.success("Verified that France is excluded from App Store sale availability")
+end
+
+def find_uploaded_build!(app:, app_version:, build_number:)
+  build = Spaceship::ConnectAPI::Build.all(
+    app_id: app.id,
+    version: app_version,
+    build_number: build_number.to_s,
+    limit: 1
+  ).first
+  unless build
+    UI.user_error!(
+      "Kithra #{app_version} (#{build_number}) could not be found in App Store Connect"
+    )
+  end
+  build
+end
+
+def verify_and_attach_internal_build!(app:, app_version:, build_number:)
+  build = find_uploaded_build!(
+    app: app,
+    app_version: app_version,
+    build_number: build_number
+  )
+
+  if build.uses_non_exempt_encryption.nil?
+    UI.user_error!(
+      "Build #{build_number} has no resolved encryption declaration in App Store " \
+      "Connect. Do not attach testers until export compliance is resolved."
+    )
+  end
+  UI.message(
+    "App Store Connect reports usesNonExemptEncryption=" \
+    "#{build.uses_non_exempt_encryption} for build #{build_number}"
+  )
+
+  beta_detail = build.build_beta_detail
+  UI.user_error!("Build #{build_number} has no TestFlight beta detail") unless beta_detail
+
+  compliance_states = [
+    beta_detail.internal_build_state,
+    beta_detail.external_build_state
+  ]
+  missing_compliance = Spaceship::ConnectAPI::BuildBetaDetail::InternalState::MISSING_EXPORT_COMPLIANCE
+  compliance_review = Spaceship::ConnectAPI::BuildBetaDetail::InternalState::IN_EXPORT_COMPLIANCE_REVIEW
+  if compliance_states.include?(missing_compliance)
+    UI.user_error!(
+      "Build #{build_number} was uploaded with ITSAppUsesNonExemptEncryption=true " \
+      "and is waiting for Joaquim to answer App Store Connect's export-compliance " \
+      "questionnaire. Open the TestFlight build and choose Provide Export Compliance " \
+      "Information. After Apple clears the build, run `bundle exec fastlane verify_beta` " \
+      "to attach it to #{INTERNAL_TESTFLIGHT_GROUP}; do not upload the binary again."
+    )
+  end
+  if compliance_states.include?(compliance_review)
+    UI.user_error!(
+      "Build #{build_number} is in export-compliance review. After Apple clears it, " \
+      "run `bundle exec fastlane verify_beta`; do not upload the binary again."
+    )
+  end
+
+  ready_states = [
+    Spaceship::ConnectAPI::BuildBetaDetail::InternalState::READY_FOR_BETA_TESTING,
+    Spaceship::ConnectAPI::BuildBetaDetail::InternalState::IN_BETA_TESTING
+  ]
+  unless ready_states.include?(beta_detail.internal_build_state)
+    UI.user_error!(
+      "Build #{build_number} is not ready for internal testing " \
+      "(state: #{beta_detail.internal_build_state})"
+    )
+  end
+
+  internal_group = app.get_beta_groups.find do |group|
+    group.name == INTERNAL_TESTFLIGHT_GROUP && group.is_internal_group
+  end
+  unless internal_group
+    UI.user_error!("Missing internal TestFlight group: #{INTERNAL_TESTFLIGHT_GROUP}")
+  end
+
+  already_attached = internal_group.fetch_builds.any? { |candidate| candidate.id == build.id }
+  build.add_beta_groups(beta_groups: [internal_group]) unless already_attached
+  unless internal_group.fetch_builds.any? { |candidate| candidate.id == build.id }
+    UI.user_error!(
+      "Build #{build_number} is ready but was not attached to #{INTERNAL_TESTFLIGHT_GROUP}"
+    )
+  end
+
+  UI.success(
+    "Kithra #{app_version} (#{build_number}) passed export compliance and reached " \
+    "#{INTERNAL_TESTFLIGHT_GROUP}"
+  )
+end
+
+platform :ios do
+  private_lane :wait_for_testflight_processing do |options|
+    timeout = testflight_processing_timeout
+    attempt = 1
+
+    begin
+      upload_to_testflight(
+        api_key: options[:api_key],
+        app_identifier: options[:app_identifier],
+        distribute_only: true,
+        app_version: options[:app_version],
+        build_number: options[:build_number].to_s,
+        distribute_external: false,
+        notify_external_testers: false,
+        submit_beta_review: false,
+        skip_submission: true,
+        skip_waiting_for_build_processing: false,
+        uses_non_exempt_encryption: true,
+        wait_processing_interval: 30,
+        wait_processing_timeout_duration: timeout
+      )
+    rescue FastlaneCore::Interface::FastlaneCrash => error
+      raise unless error.message.include?("FastlaneCore::BuildWatcher exceeded")
+
+      if attempt < 2
+        attempt += 1
+        UI.important(
+          "App Store Connect is still processing build #{options[:build_number]}; " \
+          "retrying the processing check without re-uploading the binary."
+        )
+        retry
+      end
+
+      UI.user_error!(
+        "Kithra #{options[:app_version]} (#{options[:build_number]}) was uploaded, " \
+        "but App Store Connect processing timed out after #{attempt} attempts. No " \
+        "binary was re-uploaded. Inspect the build in App Store Connect, then run " \
+        "`bundle exec fastlane verify_beta`."
+      )
+    end
+  end
+
+  desc "Build and upload an internal-only Kithra build to TestFlight"
+  lane :beta do
+    ensure_git_status_clean(show_uncommitted_changes: true)
+
+    app_identifier = appfile_value(:app_identifier)
+    developer_team_id = appfile_value(:team_id)
+    credentials = app_store_connect_credentials
+    api_key = app_store_connect_api_key(
+      issuer_id: credentials[:issuer_id],
+      key_id: credentials[:key_id],
+      key_filepath: credentials[:key_filepath],
+      duration: 1200,
+      in_house: false
+    )
+    app = find_app!(app_identifier)
+    ensure_france_excluded!(app)
+
+    app_version = get_version_number(
+      xcodeproj: XCODE_PROJECT,
+      target: "Kithra"
+    )
+    latest_uploaded_build = latest_testflight_build_number(
+      api_key: api_key,
+      app_identifier: app_identifier,
+      version: app_version,
+      initial_build_number: 1
+    )
+    next_build_number = latest_uploaded_build.to_i + 1
+    increment_build_number(
+      build_number: next_build_number,
+      skip_info_plist: true,
+      xcodeproj: XCODE_PROJECT
+    )
+
+    authentication_xcargs = [
+      "-allowProvisioningUpdates",
+      "-authenticationKeyPath #{Shellwords.escape(credentials[:key_filepath])}",
+      "-authenticationKeyID #{Shellwords.escape(credentials[:key_id])}",
+      "-authenticationKeyIssuerID #{Shellwords.escape(credentials[:issuer_id])}"
+    ].join(" ")
+
+    ipa_path = build_app(
+      project: XCODE_PROJECT,
+      scheme: "Kithra",
+      configuration: "Release",
+      clean: true,
+      output_directory: BUILD_OUTPUT_DIRECTORY,
+      output_name: "Kithra.ipa",
+      archive_path: File.join(BUILD_OUTPUT_DIRECTORY, "Kithra.xcarchive"),
+      export_method: "app-store",
+      export_options: {
+        manageAppVersionAndBuildNumber: false,
+        signingStyle: "automatic",
+        teamID: developer_team_id,
+        testFlightInternalTestingOnly: true
+      },
+      export_team_id: developer_team_id,
+      xcargs: authentication_xcargs
+    )
+
+    upload_to_testflight(
+      api_key: api_key,
+      app_identifier: app_identifier,
+      ipa: ipa_path,
+      distribute_external: false,
+      notify_external_testers: false,
+      submit_beta_review: false,
+      skip_submission: true,
+      skip_waiting_for_build_processing: true,
+      uses_non_exempt_encryption: true
+    )
+
+    git_commit(
+      path: [XCODE_PROJECT_FILE],
+      message: "chore(ios): bump build number to #{next_build_number}"
+    )
+    ensure_git_status_clean(show_uncommitted_changes: true)
+
+    wait_for_testflight_processing(
+      api_key: api_key,
+      app_identifier: app_identifier,
+      app_version: app_version,
+      build_number: next_build_number
+    )
+    verify_and_attach_internal_build!(
+      app: app,
+      app_version: app_version,
+      build_number: next_build_number
+    )
+  end
+
+  desc "Resume verification and internal distribution for an uploaded Kithra build"
+  lane :verify_beta do |options|
+    app_identifier = appfile_value(:app_identifier)
+    credentials = app_store_connect_credentials
+    api_key = app_store_connect_api_key(
+      issuer_id: credentials[:issuer_id],
+      key_id: credentials[:key_id],
+      key_filepath: credentials[:key_filepath],
+      duration: 1200,
+      in_house: false
+    )
+    app = find_app!(app_identifier)
+    ensure_france_excluded!(app)
+
+    app_version = options[:version].to_s.strip
+    if app_version.empty?
+      app_version = get_version_number(
+        xcodeproj: XCODE_PROJECT,
+        target: "Kithra"
+      )
+    end
+    build_number = options[:build_number].to_s.strip
+    if build_number.empty?
+      build_number = latest_testflight_build_number(
+        api_key: api_key,
+        app_identifier: app_identifier,
+        version: app_version,
+        initial_build_number: 1
+      ).to_s
+    end
+
+    wait_for_testflight_processing(
+      api_key: api_key,
+      app_identifier: app_identifier,
+      app_version: app_version,
+      build_number: build_number
+    )
+    verify_and_attach_internal_build!(
+      app: app,
+      app_version: app_version,
+      build_number: build_number
+    )
+  end
+end

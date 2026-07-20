@@ -23,12 +23,10 @@ Default rule: do not store long-lived secrets in git history. `.gitignore`
 prevents accidental commits; it is not encryption or access control.
 
 Owner convenience exception: this project allows owner-local secrets under the
-ignored repo path `secrets/` so the workspace can sync across the owner's
-Windows machines with OneDrive. This is a conscious tradeoff: OneDrive and the
-owner's Microsoft account become part of the trust boundary. It is acceptable
-for local owner copies of Apple keys, Cloudflare tokens, and similar setup
-material, but these files must never be committed or used as the team-sharing
-mechanism.
+ignored repo path `secrets/` as input to local scripts. Those files are private
+workspace state, not source, a backup, or a cross-machine sync mechanism. Keep
+durable or multi-machine copies in a password manager or a separate encrypted
+secrets store outside the active clone.
 
 Reasons:
 
@@ -44,7 +42,7 @@ Reasons:
 
 Safe locations:
 
-- Ignored repo-local path `secrets/`: owner-local synced convenience storage.
+- Ignored repo-local path `secrets/`: owner-local input for scripts in that clone.
 - Password manager or encrypted vault: higher-security owner copies of Apple
   `.p8` files, recovery material, SSH keys, Cloudflare tokens, and
   payment/account records.
@@ -55,11 +53,14 @@ Safe locations:
 - Local `.env.local`: local-only development values, never production owner
   credentials.
 
-For App Store Connect, the owner-local synced path is:
+For App Store Connect, the optional repo-local input path is:
 
 ```text
-C:\Users\f927g\OneDrive\Documents\GitHub\Speakeasy\secrets\app-store-connect\AuthKey_<KEY_ID>.p8
+<repository-root>/secrets/app-store-connect/AuthKey_<KEY_ID>.p8
 ```
+
+`APP_STORE_CONNECT_API_KEY_PATH` may instead point to a password-manager-backed
+or separately encrypted location outside the clone.
 
 Only the CI secret values should be copied into GitHub Actions or Xcode Cloud
 when a workflow actually needs them.
@@ -141,7 +142,7 @@ Avoid OneDrive for:
 - `DerivedData`, Docker volumes, dependency caches, or generated build output.
 
 If owner-local secrets need to be available on multiple machines, prefer a
-password manager or a separate OneDrive secrets folder outside the active git
+password manager or a separate encrypted secrets folder outside the active git
 clone. If `secrets/` exists inside a clone, keep it ignored and owner-only.
 
 ## App Store Connect API Key Flow

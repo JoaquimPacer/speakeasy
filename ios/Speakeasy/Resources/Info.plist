@@ -19,7 +19,15 @@
 	<key>CFBundleShortVersionString</key>
 	<string>1.0</string>
 	<key>CFBundleVersion</key>
-	<string>1</string>
+	<string>$(CURRENT_PROJECT_VERSION)</string>
+	<!--
+	Kithra implements end-to-end content encryption with libsodium. Joaquim chose
+	the conservative true declaration for the next upload so App Store Connect
+	presents its export-compliance questionnaire. Do not change this value or add
+	ITSEncryptionExportComplianceCode until the questionnaire outcome is recorded.
+	-->
+	<key>ITSAppUsesNonExemptEncryption</key>
+	<true/>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
 	<key>NSCameraUsageDescription</key>
