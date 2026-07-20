@@ -16,9 +16,9 @@ to store each secret safely.
 
 - Local development secrets go in ignored `.env.local` files.
 - CI secrets go in GitHub Actions secrets or Xcode Cloud secrets.
-- Owner-local secrets may be stored under ignored `secrets/` for OneDrive sync
-  across the owner's machines. Treat this as private workspace state, not source
-  code or team sharing.
+- Ignored repo-local `secrets/` may be used as owner-local script input, but it
+  is not a cross-machine sync or backup mechanism. Keep durable copies in a
+  password manager or a separate encrypted secrets store outside the clone.
 - Never commit `.env`, `.env.local`, `.p8`, certificates, provisioning profiles,
   SSH private keys, or private API keys.
 - Track setup status here using non-secret notes only.
@@ -110,8 +110,14 @@ to store each secret safely.
   - Status: Initial authenticated delete-account endpoint and iOS Settings flow added on 2026-05-27. Needs end-to-end real-device verification against the beta HTTPS relay before App Review.
 - [ ] Prepare App Privacy labels.
   - Status:
-- [ ] Prepare encryption export compliance answers.
-  - Status:
+- [ ] Complete encryption export compliance in App Store Connect.
+  - Decision: Option B selected by Joaquim on 2026-07-20. The next upload declares
+    `ITSAppUsesNonExemptEncryption = true` so App Store Connect presents the
+    questionnaire; tester attachment remains blocked until it is resolved.
+  - Status: After the upload, record the non-secret questionnaire outcome here.
+    If Apple confirms exemption, Joaquim decides whether to set the plist value
+    to `false`. If Apple requires documentation, keep it `true` and add only an
+    Apple-issued `ITSEncryptionExportComplianceCode`.
 - [x] Implement block/report controls.
   - Reports are metadata-only. Do not send decrypted videos to the operator.
   - Status: Initial iOS contact-row actions and relay endpoints added on 2026-05-27. Delete removes the contact from the current user's list, block removes the contact and prevents future uploads from the blocked user, and report stores metadata only.

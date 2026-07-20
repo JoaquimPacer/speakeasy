@@ -22,8 +22,10 @@ and routing metadata only.
 ## Pre-Invite Checklist
 
 - Confirm the uploaded build finished processing.
-- Confirm TestFlight build activity does not show `Missing Compliance`; the app
-  declares its documentation-exempt standard encryption in `Info.plist`.
+- For the next `ITSAppUsesNonExemptEncryption = true` upload, expect `Missing
+  Compliance` until Joaquim completes App Store Connect's export-compliance
+  questionnaire. Do not invite testers while the answer or Apple review is
+  pending; after clearance, run `bundle exec fastlane verify_beta` from `ios/`.
 - Confirm an internal or external tester group has the processed build attached.
 - Send tester invites only after the build is visible in the selected group.
 

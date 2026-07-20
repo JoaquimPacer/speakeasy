@@ -23,6 +23,14 @@ For _fastlane_ installation instructions, see [Installing _fastlane_](https://do
 
 Build and upload an internal-only Kithra build to TestFlight
 
+### ios verify_beta
+
+```sh
+[bundle exec] fastlane ios verify_beta
+```
+
+Resume verification and internal distribution for an uploaded Kithra build
+
 ----
 
 This README.md is auto-generated and will be re-generated every time [_fastlane_](https://fastlane.tools) is run.
