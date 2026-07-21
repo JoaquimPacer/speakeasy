@@ -10,32 +10,34 @@ All cryptography is provided by [libsodium](https://doc.libsodium.org/), a widel
 
 | Purpose | Algorithm | libsodium Function |
 |---------|-----------|-------------------|
-| Key exchange | X25519 | `crypto_kx_*` |
-| Symmetric encryption | XChaCha20-Poly1305 | `crypto_secretbox_*` |
-| Asymmetric encryption | X25519 + XSalsa20-Poly1305 | `crypto_box_seal` |
+| Key exchange / key wrapping | X25519 | libsodium box/key-exchange APIs |
+| Device authentication | Ed25519 signatures | `crypto_sign_*` |
+| Content encryption | XChaCha20-Poly1305 | libsodium secretstream or AEAD APIs |
+| Asymmetric key wrapping | X25519 + AEAD | `crypto_box_seal` or equivalent envelope |
 | Key derivation | BLAKE2b | `crypto_generichash` |
 | Random bytes | OS CSPRNG | `randombytes_buf` |
 
 ## Key Management
 
 ### Identity Keys
-Each device generates a long-term X25519 keypair on first launch:
-- **Private key** — stored in device secure enclave (iOS Keychain / Android Keystore). Never leaves the device.
-- **Public key** — registered with the server. This is your "identity."
+Each device generates long-term encryption and signing keypairs on first launch:
+- **Encryption private key** — stored in iOS Keychain / Android Keystore with the strongest available local protection. Never leaves the device.
+- **Signing private key** — stored in iOS Keychain / Android Keystore and used only to sign login challenges. Never leaves the device.
+- **Public keys** — registered with the server. These are the device identity material the relay can use for routing and challenge verification.
 
 ### Message Encryption Flow
 
 ```
 Sender                          Server                         Recipient
   │                               │                               │
-  │  1. Generate ephemeral        │                               │
-  │     symmetric key (K)         │                               │
+  │  1. Generate fresh content    │                               │
+  │     key (K)                   │                               │
   │                               │                               │
   │  2. Encrypt video with K      │                               │
   │     (XChaCha20-Poly1305)      │                               │
   │                               │                               │
   │  3. Encrypt K with            │                               │
-  │     recipient's public key    │                               │
+  │     recipient encryption key  │                               │
   │     (crypto_box_seal)         │                               │
   │                               │                               │
   │  4. Upload encrypted video    │                               │
@@ -55,7 +57,11 @@ Sender                          Server                         Recipient
 ```
 
 ### Forward Secrecy
-Each message uses a fresh ephemeral symmetric key. Compromising one key reveals only that single message. Past and future messages remain secure.
+V1 uses a fresh content key for each message, which limits the blast radius if a
+single content key is exposed. V1 does not claim full Signal-style forward
+secrecy: if an attacker later steals a recipient device private key and also has
+old encrypted blobs/envelopes, old messages may be at risk. True forward secrecy
+with prekeys/ratcheting is a V2 goal.
 
 ## Server Trust Model
 
@@ -75,7 +81,7 @@ The server is **untrusted by design**:
 | Server compromise | Encrypted blobs are useless without device keys |
 | Curious server operators | Zero-knowledge design — nothing to see |
 | Mass surveillance | No central service — each instance is independent |
-| MITM (key exchange) | Key verification via safety numbers / QR codes |
+| MITM (key exchange) | V2 key verification via safety numbers / QR codes |
 
 ### Not Protected Against (v1)
 | Threat | Limitation |
@@ -84,6 +90,7 @@ The server is **untrusted by design**:
 | Device compromise | Physical access to unlocked device = access to keys |
 | Recipient screenshots | No DRM, no screenshot prevention |
 | Targeted device exploits | Out of scope for application-level crypto |
+| Full forward secrecy | V2; V1 uses per-message content keys without ratcheting |
 
 ## Security Reporting
 

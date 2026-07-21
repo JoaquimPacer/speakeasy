@@ -1,9 +1,85 @@
-node_modules/
+# OS and editor noise
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+.vscode/
+.idea/
+
+# Logs
+*.log
+logs/
+
+# Local environment files
 .env
 .env.*
+.envrc
 !.env.example
+!.env.*.example
+
+# Secret material
+# Owner-local private workspace. This may exist inside the OneDrive-synced repo
+# for convenience, but it must never be committed.
+secrets/
+secrets/**
+.cloudflared/
+*.pem
+*.key
+*.p8
+*.p12
+*.cer
+*.csr
+*.der
+*.mobileprovision
+*.provisionprofile
+*.keystore
+*.jks
+cloudflared/*.json
+cloudflared/*.pem
+
+# Dependencies
+node_modules/
+.gradle/
+
+# Build outputs
 dist/
 build/
-*.log
-.DS_Store
+out/
+tmp/
+coverage/
+coverage.out
+*.test
+*.prof
+
+# Server local data
 data/
+server/data/
+server/tmp/
+/storage/
+/blobs/
+*.db
+*.sqlite
+*.sqlite3
+
+# Swift and Xcode
+.build/
+.swiftpm/
+DerivedData/
+ios/DerivedData/
+ios/build/
+*.xcuserstate
+*.xcscmblueprint
+*.moved-aside
+*.hmap
+*.ipa
+*.dSYM/
+*.xcarchive/
+*.xcodeproj/xcuserdata/
+*.xcworkspace/xcuserdata/
+
+# Android
+android/.gradle/
+android/local.properties
+android/**/build/
+*.apk
+*.aab

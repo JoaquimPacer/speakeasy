@@ -1,0 +1,47 @@
+name: Android CI
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/android-ci.yml"
+      - "android/**"
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/android-ci.yml"
+      - "android/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: android-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  android:
+    name: Android debug build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK packages
+        run: sdkmanager "platform-tools" "platforms;android-36" "build-tools;36.0.0"
+
+      - name: Build Kithra Android debug APK
+        working-directory: android
+        run: ./gradlew :app:assembleDebug
