@@ -91,6 +91,24 @@ to store each secret safely.
 
 - [ ] Confirm GitHub repository access and CODEOWNERS review path.
   - Status:
+- [ ] Connect `JoaquimPacer/speakeasy` to a Codex Cloud environment.
+  - Status: Repository guidance and the human-gated loop protocol are present in
+    `AGENTS.md` and `docs/AI_REVIEW_LOOP.md`. Joaquim must complete the
+    account-level Codex Cloud connection.
+- [ ] Give Claude a distinct GitHub identity for automatic review.
+  - Status: No GitHub Actions secrets are configured as of 2026-07-26. Phase 1
+    can run manually. Before enabling Claude Code GitHub Actions,
+    install/authorize the Claude GitHub App and add the required Anthropic
+    credential as a GitHub Actions secret without exposing it in chat.
+- [ ] Complete three human-gated Claude/Codex review rounds before automating
+      agent-to-agent handoffs.
+  - Status: The first run will use PR #2 and the protocol in
+    `docs/AI_REVIEW_LOOP.md`.
+- [ ] Lock down GitHub automation before adding a write-capable agent workflow.
+  - Status: Repository Actions currently default to a write token and may
+    approve pull-request reviews; `main` has no branch protection or ruleset.
+    Joaquim must switch the default token to read-only, disable Action approval,
+    and add a `main` ruleset requiring pull requests and relevant CI.
 - [ ] Choose CI provider.
   - Default: GitHub Actions macOS.
   - Alternative: Xcode Cloud after Apple enrollment.
@@ -100,6 +118,11 @@ to store each secret safely.
   - Status:
 
 ## Privacy, Safety, And App Review
+
+- [x] Choose initial App Store distribution method.
+  - Decision: Public, free distribution with no launch promotion. Joaquim
+    accepts the small risk of organic discovery and may use a new app record in
+    the future if early reviews make a clean relaunch preferable.
 
 - [ ] Draft privacy policy.
   - Must disclose metadata and encrypted content storage accurately.

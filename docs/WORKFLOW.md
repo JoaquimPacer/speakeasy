@@ -219,35 +219,31 @@ true:
 Good long-run prompt:
 
 ```text
-Read AGENTS.md, CLAUDE.md, docs/BUILD_PLAN.md, docs/WORKFLOW.md,
-docs/OWNER_SETUP.md, and git status. Continue the next unchecked implementation
+Read your role file (AGENTS.md for Codex or CLAUDE.md for Claude), then
+docs/BUILD_PLAN.md, docs/WORKFLOW.md, docs/OWNER_SETUP.md, and git status. For
+PR review work, also read docs/AI_REVIEW_LOOP.md. Continue the next unchecked
 task. Do not ask for secrets in chat. Use existing secret names only, preserve
 the documented security constraints, run verification, and report blockers.
 ```
 
-## Fast Track To Unattended Work
+## Human-Gated AI Review Loop
 
-The shortest path to useful unattended work is:
+Use `docs/AI_REVIEW_LOOP.md` as the shared protocol. Claude reviews an exact PR
+head and posts a structured finding. Joaquim explicitly hands that review to
+Codex. Codex implements and verifies blocking findings, pushes a new head, and
+posts a structured response. Joaquim then asks Claude to review the new head.
 
-1. Keep APNs deferred until the local send/receive flow works.
-2. Get local verification working: Go toolchain or Docker-based Go test/build,
-   Docker Compose config, and a repeatable relay start command.
-3. Choose CI provider. Default is GitHub Actions for secret-free server checks
-   and unsigned iOS simulator checks; use Xcode Cloud later for TestFlight if it
-   reduces signing friction.
-4. Add CI secrets only when a workflow consumes them. Do not block local
-   implementation on CI upload secrets.
-5. Build the local vertical slice from `docs/BUILD_PLAN.md`: register, invite,
-   record, compress, encrypt, upload, download, verify, local-cache
-   acknowledge, relay-delete.
-6. After the local vertical slice works, set up beta relay hosting and then APNs.
+Keep the first three runs human-gated. Do not add a write-capable comment
+workflow until branch protection, read-only default Action permissions,
+distinct agent identities, stale-SHA/idempotency checks, and a manual disable
+switch are in place.
 
 Current practical blockers to long unattended implementation:
 
 - Full simulator/device UI exercise still needs a booted simulator or physical
   iPhone interaction; unsigned command-line iOS builds are passing.
-- Auth login/token restore after app restart is not implemented yet; local
-  registration works for the active app session.
-- TestFlight still requires Apple signing/deployment setup after local MVP flow
-  is usable.
-- GitHub/Xcode CI secrets are needed only after upload/signing workflows exist.
+- Signing and App Store upload require owner-authorized access on macOS.
+- Privacy, export-compliance, distribution, release, and merge decisions remain
+  human-only.
+- GitHub agent automation must remain manual until the safeguards above are
+  configured and verified.

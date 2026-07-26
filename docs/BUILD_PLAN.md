@@ -6,10 +6,11 @@ threads should read this file before making changes.
 ## New Chat Bootstrap
 
 ```text
-Read AGENTS.md, CLAUDE.md, docs/BUILD_PLAN.md, docs/WORKFLOW.md,
-docs/OWNER_SETUP.md, docs/MAC_SETUP.md, and git status. Continue from the next
-unchecked task. Do not assume unstated decisions; preserve the existing
-constraints.
+Read your role file (AGENTS.md for Codex or CLAUDE.md for Claude), then
+docs/BUILD_PLAN.md, docs/WORKFLOW.md, docs/OWNER_SETUP.md, docs/MAC_SETUP.md,
+and git status. For PR review work, also read docs/AI_REVIEW_LOOP.md. Continue
+from the next unchecked task. Do not assume unstated decisions; preserve the
+existing constraints.
 ```
 
 ## Current Decisions
@@ -18,7 +19,8 @@ constraints.
 - Public iOS app name: Kithra.
 - Internal repo/project name: Speakeasy.
 - iOS bundle ID: `com.joaquimpacer.speakeasy`.
-- V1 target: iOS TestFlight MVP before public App Store release.
+- V1 target: public iOS App Store release. Use internal TestFlight to smoke-test
+  the exact release-candidate build before submission.
 - V1 client: native Swift/SwiftUI, AVFoundation, Keychain, libsodium.
 - V1 server: Go relay, SQLite, local filesystem blob storage, Docker Compose.
 - V1 scope: 1:1 video messaging, invite-code contacts, delivery/watch status,
@@ -30,6 +32,9 @@ constraints.
   cross-platform parity with iOS by sharing API/crypto contracts and test
   checklists, not by sharing UI code.
 - Collaboration: small PRs with Joshua credited and CODEOWNERS review preserved.
+- AI review loop: Claude is the technical reviewer, Codex is the implementation
+  writer, and Joaquim initiates every handoff and owns merge/release decisions.
+  See `docs/AI_REVIEW_LOOP.md`.
 - Local dev relay: Docker on local machine or Linux laptop.
 - Private beta relay: Linux laptop through Cloudflare Tunnel or equivalent HTTPS
   tunnel, then DigitalOcean if uptime or review needs require it.
@@ -246,6 +251,10 @@ blockers, and unverified assumptions.
   with package `com.joaquimpacer.kithra`, a release plan in
   `docs/GOOGLE_PLAY_RELEASE.md`, and Android CI. Local Android debug APK and
   release `.aab` bundle builds passed.
+- 2026-07-26: Public iOS distribution selected. Added a human-gated
+  Claude-review/Codex-implementation protocol with exact-SHA and review-ID
+  guards, a three-round limit, and human-only merge, release, privacy, and
+  export-compliance decisions.
 
 ## Open Placeholders
 
