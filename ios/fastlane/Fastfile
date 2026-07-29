@@ -246,7 +246,6 @@ platform :ios do
         submit_beta_review: false,
         skip_submission: true,
         skip_waiting_for_build_processing: false,
-        uses_non_exempt_encryption: true,
         wait_processing_interval: 30,
         wait_processing_timeout_duration: timeout
       )
@@ -340,7 +339,6 @@ platform :ios do
       submit_beta_review: false,
       skip_submission: true,
       skip_waiting_for_build_processing: true,
-      uses_non_exempt_encryption: true
     )
 
     git_commit(
