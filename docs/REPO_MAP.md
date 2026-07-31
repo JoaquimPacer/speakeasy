@@ -16,7 +16,6 @@ This repo is the paper behind Kithra (working name speakeasy): the spec, archite
 | `docs/` | [SPEC.md](SPEC.md) (the MVP scope and flows), [ARCHITECTURE.md](ARCHITECTURE.md) (Go relay + Swift iOS client, and the planned `server/` + `ios/` layout), [SECURITY.md](SECURITY.md) (libsodium crypto model, threat model), this map, and [MARKETING.md](MARKETING.md). | The design changes; keep SPEC and the app honest with each other. |
 | `LICENSE` | MIT. Open source is part of the trust story. | Never, realistically. |
 | `.gitignore` + local `secrets/` | `secrets/` exists only on this machine (kept out via `.git/info/exclude`); never stage it. | Never stage secrets, in any repo. |
-| `archive/` | `CODEOWNERS` from the collaboration era: Joshua Ohana started the repo off and moved on (2026-07); the repo is solely Joaquim's now. | Never; it exists so history is browsable. |
 
 Root file `speakeasy-map.excalidraw` is the visual version of this page.
 

@@ -148,9 +148,8 @@ box(450, 190, 220, 120, "Kithra build (Mac)", "coded from these docs\nwith Codex
 box(805, 140, 270, 110, "Kithra iOS app", "Swift + libsodium; encrypts\non the device; App Store\nsubmit due Jul 24", "#7a4a21", "#ffffff", "#f0e6db", "#7a4a21");
 box(805, 330, 270, 80, "Go relay server", "self-hosted dumb relay;\nsees only sealed blobs");
 
-box(70, 525, 240, 110, "LICENSE + .gitignore", "MIT; secrets/ stays local\n(git exclude), never staged");
-box(350, 525, 240, 110, "archive/", "CODEOWNERS from the collab\nera; Joshua moved on 2026-07");
-box(630, 525, 250, 110, "this file", "speakeasy-map.excalidraw;\nregenerate via docs/\nmake-repo-map.mjs");
+box(230, 525, 240, 110, "LICENSE + .gitignore", "MIT; secrets/ stays local\n(git exclude), never staged");
+box(660, 525, 250, 110, "this file", "speakeasy-map.excalidraw;\nregenerate via docs/\nmake-repo-map.mjs");
 
 // ── Arrows (edge to edge; labeled segments straight, axis-aligned, 2x chip) ──
 arrow([[320, 300], [450, 300]], "guides");                 // docs/ -> build (130px)

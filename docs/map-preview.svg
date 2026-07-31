@@ -38,19 +38,15 @@
 <text x="807" y="362.75" font-family="'Segoe UI', Arial, sans-serif" font-size="15" fill="#1c1913">Go relay server</text>
 <text x="807" y="384.2" font-family="'Segoe UI', Arial, sans-serif" font-size="12" fill="#55503f">self-hosted dumb relay;</text>
 <text x="807" y="399.8" font-family="'Segoe UI', Arial, sans-serif" font-size="12" fill="#55503f">sees only sealed blobs</text>
-<rect x="60" y="535" width="240" height="110" rx="8" fill="#ffffff" stroke="#1c1913" stroke-width="1"/>
-<text x="72" y="557.75" font-family="'Segoe UI', Arial, sans-serif" font-size="15" fill="#1c1913">LICENSE + .gitignore</text>
-<text x="72" y="579.2" font-family="'Segoe UI', Arial, sans-serif" font-size="12" fill="#55503f">MIT; secrets/ stays local</text>
-<text x="72" y="594.8000000000001" font-family="'Segoe UI', Arial, sans-serif" font-size="12" fill="#55503f">(git exclude), never staged</text>
-<rect x="340" y="535" width="240" height="110" rx="8" fill="#ffffff" stroke="#1c1913" stroke-width="1"/>
-<text x="352" y="557.75" font-family="'Segoe UI', Arial, sans-serif" font-size="15" fill="#1c1913">archive/</text>
-<text x="352" y="579.2" font-family="'Segoe UI', Arial, sans-serif" font-size="12" fill="#55503f">CODEOWNERS from the collab</text>
-<text x="352" y="594.8000000000001" font-family="'Segoe UI', Arial, sans-serif" font-size="12" fill="#55503f">era; Joshua moved on 2026-07</text>
-<rect x="620" y="535" width="250" height="110" rx="8" fill="#ffffff" stroke="#1c1913" stroke-width="1"/>
-<text x="632" y="557.75" font-family="'Segoe UI', Arial, sans-serif" font-size="15" fill="#1c1913">this file</text>
-<text x="632" y="579.2" font-family="'Segoe UI', Arial, sans-serif" font-size="12" fill="#55503f">speakeasy-map.excalidraw;</text>
-<text x="632" y="594.8000000000001" font-family="'Segoe UI', Arial, sans-serif" font-size="12" fill="#55503f">regenerate via docs/</text>
-<text x="632" y="610.4000000000001" font-family="'Segoe UI', Arial, sans-serif" font-size="12" fill="#55503f">make-repo-map.mjs</text>
+<rect x="220" y="535" width="240" height="110" rx="8" fill="#ffffff" stroke="#1c1913" stroke-width="1"/>
+<text x="232" y="557.75" font-family="'Segoe UI', Arial, sans-serif" font-size="15" fill="#1c1913">LICENSE + .gitignore</text>
+<text x="232" y="579.2" font-family="'Segoe UI', Arial, sans-serif" font-size="12" fill="#55503f">MIT; secrets/ stays local</text>
+<text x="232" y="594.8000000000001" font-family="'Segoe UI', Arial, sans-serif" font-size="12" fill="#55503f">(git exclude), never staged</text>
+<rect x="650" y="535" width="250" height="110" rx="8" fill="#ffffff" stroke="#1c1913" stroke-width="1"/>
+<text x="662" y="557.75" font-family="'Segoe UI', Arial, sans-serif" font-size="15" fill="#1c1913">this file</text>
+<text x="662" y="579.2" font-family="'Segoe UI', Arial, sans-serif" font-size="12" fill="#55503f">speakeasy-map.excalidraw;</text>
+<text x="662" y="594.8000000000001" font-family="'Segoe UI', Arial, sans-serif" font-size="12" fill="#55503f">regenerate via docs/</text>
+<text x="662" y="610.4000000000001" font-family="'Segoe UI', Arial, sans-serif" font-size="12" fill="#55503f">make-repo-map.mjs</text>
 <polyline points="310,310 440,310" fill="none" stroke="#7a4a21" stroke-width="2"/>
 <polygon points="440,310 428,315 428,305" fill="#7a4a21"/>
 <rect x="345.4" y="300" width="59.2" height="20" rx="8" fill="#ffffff" stroke="#c9c3b4" stroke-width="1"/>

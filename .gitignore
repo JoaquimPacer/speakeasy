@@ -7,3 +7,7 @@ build/
 *.log
 .DS_Store
 data/
+
+# Private records. This repo is public, so these never get committed.
+*.local.md
+docs/private/
