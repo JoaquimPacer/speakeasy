@@ -16,7 +16,7 @@ struct PreviewData {
 
         let user = SpeakeasyUser(
             id: currentUserID,
-            username: "joshua",
+            username: "alex",
             createdAt: now.addingTimeInterval(-86_400)
         )
 

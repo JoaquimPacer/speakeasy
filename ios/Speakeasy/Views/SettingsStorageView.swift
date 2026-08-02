@@ -149,6 +149,24 @@ struct SettingsStorageView: View {
                 .disabled(true)
             }
 
+            Section("Help & Privacy") {
+                Link(destination: Self.supportURL) {
+                    Label("Kithra Support", systemImage: "questionmark.circle")
+                }
+
+                Link(destination: Self.privacyPolicyURL) {
+                    Label("Privacy Policy", systemImage: "hand.raised")
+                }
+
+                Link(destination: Self.supportEmailURL) {
+                    Label("Email Support", systemImage: "envelope")
+                }
+
+                Link(destination: Self.securityEmailURL) {
+                    Label("Report a Security Issue", systemImage: "lock.shield")
+                }
+            }
+
             if let error = appState.lastErrorMessage {
                 Section("Status") {
                     Label(error, systemImage: "exclamationmark.triangle")
@@ -211,6 +229,11 @@ struct SettingsStorageView: View {
             onInviteAccepted()
         }
     }
+
+    private static let supportURL = URL(string: "https://kithra.joaquimpacer.com/support.html")!
+    private static let privacyPolicyURL = URL(string: "https://kithra.joaquimpacer.com/privacy.html")!
+    private static let supportEmailURL = URL(string: "mailto:support@jqinnovation.com")!
+    private static let securityEmailURL = URL(string: "mailto:security@jqinnovation.com")!
 }
 
 private enum FocusedField: Hashable {

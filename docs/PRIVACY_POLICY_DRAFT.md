@@ -1,6 +1,6 @@
 # Kithra Privacy Policy Draft
 
-Last updated: 2026-05-27
+Last updated: 2026-08-02
 
 Kithra is an encrypted async video messaging app. It is designed so the relay
 server cannot read the contents of your videos.
@@ -62,6 +62,8 @@ recipient's device.
 
 ## Contact
 
-Support: `<support-url>`
+Support: `https://kithra.joaquimpacer.com/support.html`
 
-Email: `<support-email>`
+Email: `support@jqinnovation.com`
+
+Security reports: `security@jqinnovation.com`

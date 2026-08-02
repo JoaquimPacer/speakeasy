@@ -27,8 +27,8 @@ Request:
 
 ```json
 {
-  "username": "joshua",
-  "deviceName": "Joshua iPhone",
+  "username": "alex",
+  "deviceName": "Alex iPhone",
   "encryptionPublicKey": "base64-x25519-public-key",
   "signingPublicKey": "base64-ed25519-public-key"
 }
@@ -40,13 +40,13 @@ Response:
 {
   "user": {
     "id": "uuid",
-    "username": "joshua",
+    "username": "alex",
     "createdAt": "2026-05-14T00:00:00Z"
   },
   "device": {
     "id": "uuid",
     "userID": "uuid",
-    "name": "Joshua iPhone",
+    "name": "Alex iPhone",
     "encryptionPublicKey": "base64-x25519-public-key",
     "signingPublicKey": "base64-ed25519-public-key",
     "createdAt": "2026-05-14T00:00:00Z"
@@ -87,7 +87,7 @@ Response:
 {
   "userID": "uuid",
   "contactID": "uuid",
-  "username": "joshua",
+  "username": "alex",
   "nickname": "",
   "encryptionPublicKey": "base64-x25519-public-key",
   "signingPublicKey": "base64-ed25519-public-key",

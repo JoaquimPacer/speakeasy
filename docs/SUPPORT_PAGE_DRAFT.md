@@ -20,14 +20,16 @@ plaintext content of your videos.
 Open Settings, then choose Delete account. This removes your relay account and
 clears local encrypted media and device keys from that device.
 
-## Known Beta Limits
+## Current Capabilities
 
 - Kithra currently supports iOS 1:1 video messaging.
 - Push notifications are not enabled yet, so the app refreshes while open.
-- The beta relay must be online for sending and receiving.
+- The relay service must be online for sending and receiving.
 
 ## Contact
 
-Email: `<support-email>`
+Email: `support@jqinnovation.com`
 
-Privacy Policy: `<privacy-policy-url>`
+Security reports: `security@jqinnovation.com`
+
+Privacy Policy: `https://kithra.joaquimpacer.com/privacy.html`

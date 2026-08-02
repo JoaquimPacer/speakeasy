@@ -31,7 +31,8 @@ existing constraints.
 - Android lane has started as a native Kotlin client under `android/`; maintain
   cross-platform parity with iOS by sharing API/crypto contracts and test
   checklists, not by sharing UI code.
-- Collaboration: small PRs with Joshua credited and CODEOWNERS review preserved.
+- Collaboration: small PRs with Joaquim as the sole code owner and required
+  human decision-maker for merge and release actions.
 - AI review loop: Claude is the technical reviewer, Codex is the implementation
   writer, and Joaquim initiates every handoff and owns merge/release decisions.
   See `docs/AI_REVIEW_LOOP.md`.

@@ -63,7 +63,7 @@ to store each secret safely.
 - [ ] Prepare TestFlight beta metadata.
   - Test account instructions:
   - Beta description:
-  - Contact email:
+  - Contact email: `support@jqinnovation.com`
   - Status: Draft beta description, tester checklist, and App Review notes are in `docs/TESTFLIGHT_NOTES.md`.
 
 ## DNS And Relay Hosting
@@ -89,12 +89,12 @@ to store each secret safely.
 
 ## GitHub And CI
 
-- [ ] Confirm GitHub repository access and CODEOWNERS review path.
-  - Status:
-- [ ] Connect `JoaquimPacer/speakeasy` to a Codex Cloud environment.
-  - Status: Repository guidance and the human-gated loop protocol are present in
-    `AGENTS.md` and `docs/AI_REVIEW_LOOP.md`. Joaquim must complete the
-    account-level Codex Cloud connection.
+- [x] Confirm GitHub repository access and CODEOWNERS review path.
+  - Status: Joaquim (`@JoaquimPacer`) is the sole code owner.
+- [x] Connect `JoaquimPacer/speakeasy` to a Codex Cloud environment.
+  - Status: Environment created with the universal image, post-setup caching,
+    and agent internet access disabled. Repository guidance and the human-gated
+    loop protocol are present in `AGENTS.md` and `docs/AI_REVIEW_LOOP.md`.
 - [ ] Give Claude a distinct GitHub identity for automatic review.
   - Status: No GitHub Actions secrets are configured as of 2026-07-26. Phase 1
     can run manually. Before enabling Claude Code GitHub Actions,

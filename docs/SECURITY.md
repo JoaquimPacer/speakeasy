@@ -96,6 +96,6 @@ The server is **untrusted by design**:
 
 If you discover a security vulnerability, please **do not** open a public GitHub issue.
 
-Contact: security@ohanaindustries.com
+Contact: security@jqinnovation.com
 
 We will acknowledge receipt within 48 hours and aim to provide a fix within 7 days for critical issues.

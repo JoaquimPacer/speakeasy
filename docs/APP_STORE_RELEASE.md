@@ -9,7 +9,7 @@ tokens, Apple API keys, or server passwords in this file.
 - Public app name: Kithra.
 - Bundle ID: `com.joaquimpacer.speakeasy`.
 - First milestone: internal TestFlight.
-- Second milestone: external TestFlight for Ohana and other invited testers.
+- Second milestone: external TestFlight for trusted invited testers.
 - Public App Store review comes after TestFlight proves the beta relay,
   onboarding, invite flow, send/receive, account deletion, and review metadata.
 - France must be excluded from public App Store sale availability. Internal
@@ -78,10 +78,10 @@ internal testers who are App Store Connect users.
 External TestFlight does not require 10,000 testers. Apple allows up to 10,000
 external testers. For a private beta, one external tester is fine.
 
-For Ohana:
+For a trusted tester:
 
-- If he should only test the app, invite him as an external TestFlight tester.
-- If he needs App Store Connect access, invite him as an internal tester with an
+- If they should only test the app, invite them as an external TestFlight tester.
+- If they need App Store Connect access, invite them as an internal tester with an
   appropriate App Store Connect role.
 
 ## Immediate Checklist

@@ -47,8 +47,8 @@ To test:
 5. Tap the contact, record a video, stop recording, and wait for auto-send.
 6. On the recipient device, open the contact and play the received video.
 
-Beta relay URL: `<https-relay-url>`
+Beta relay URL: `https://api.joaquimpacer.com`
 
-Support URL: `<support-url>`
+Support URL: `https://kithra.joaquimpacer.com/support.html`
 
-Privacy Policy URL: `<privacy-policy-url>`
+Privacy Policy URL: `https://kithra.joaquimpacer.com/privacy.html`
