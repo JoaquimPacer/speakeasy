@@ -3,17 +3,31 @@ package api
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"io"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/joaquimpacer/speakeasy/server/internal/db"
 	"github.com/joaquimpacer/speakeasy/server/internal/storage"
 )
+
+type writeTrackingStore struct {
+	storage.Store
+	writes int
+}
+
+func (s *writeTrackingStore) Write(ctx context.Context, key string, data io.Reader) error {
+	s.writes++
+	return s.Store.Write(ctx, key, data)
+}
 
 func TestLocalRelayVerticalSlice(t *testing.T) {
 	ctx := context.Background()
@@ -52,7 +66,7 @@ func TestLocalRelayVerticalSlice(t *testing.T) {
 		t.Fatalf("bob contact deviceID = %q, want alice device %q", aliceContact.DeviceID, alice.Device.ID)
 	}
 
-	envelope := json.RawMessage(`{"version":1,"algorithm":"xchacha20poly1305","encryptedContentKey":"ZmFrZQ==","nonce":"bm9uY2U="}`)
+	envelope := validTestEnvelope(t, alice.Device.ID, bob.Device.ID)
 	message := uploadTestMessage(t, relay.URL, alice.BearerToken, strings.ToUpper(bob.User.ID), strings.ToUpper(bob.Device.ID), envelope, []byte("ciphertext-video"))
 	if message.Status != "sent" {
 		t.Fatalf("uploaded message status = %q, want sent", message.Status)
@@ -105,6 +119,856 @@ func TestLocalRelayVerticalSlice(t *testing.T) {
 	}
 }
 
+func TestRegisterValidatesDevicePublicKeys(t *testing.T) {
+	ctx := context.Background()
+	database, err := db.Open(ctx, ":memory:")
+	if err != nil {
+		t.Fatalf("db.Open() error = %v", err)
+	}
+	t.Cleanup(func() { database.Close() })
+
+	blobStore, err := storage.NewLocal(t.TempDir())
+	if err != nil {
+		t.Fatalf("storage.NewLocal() error = %v", err)
+	}
+
+	relay := httptest.NewServer(New(database, blobStore, 7).Handler())
+	t.Cleanup(relay.Close)
+
+	encodedKey := func(size int) string {
+		return base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{0x01}, size))
+	}
+	validKey := encodedKey(32)
+
+	tests := []struct {
+		name          string
+		encryptionKey string
+		signingKey    string
+		wantStatus    int
+	}{
+		{
+			name:          "valid keys",
+			encryptionKey: validKey,
+			signingKey:    validKey,
+			wantStatus:    http.StatusCreated,
+		},
+		{
+			name:          "encryption key too short",
+			encryptionKey: encodedKey(31),
+			signingKey:    validKey,
+			wantStatus:    http.StatusBadRequest,
+		},
+		{
+			name:          "encryption key too long",
+			encryptionKey: encodedKey(33),
+			signingKey:    validKey,
+			wantStatus:    http.StatusBadRequest,
+		},
+		{
+			name:          "signing key too short",
+			encryptionKey: validKey,
+			signingKey:    encodedKey(31),
+			wantStatus:    http.StatusBadRequest,
+		},
+		{
+			name:          "signing key too long",
+			encryptionKey: validKey,
+			signingKey:    encodedKey(33),
+			wantStatus:    http.StatusBadRequest,
+		},
+		{
+			name:          "malformed encryption key base64",
+			encryptionKey: "not-base64!",
+			signingKey:    validKey,
+			wantStatus:    http.StatusBadRequest,
+		},
+		{
+			name:          "malformed signing key base64",
+			encryptionKey: validKey,
+			signingKey:    "not-base64!",
+			wantStatus:    http.StatusBadRequest,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			payload := map[string]string{
+				"username":            "key-test-" + strings.ReplaceAll(test.name, " ", "-"),
+				"deviceName":          "test device",
+				"encryptionPublicKey": test.encryptionKey,
+				"signingPublicKey":    test.signingKey,
+			}
+
+			var session authSessionResponse
+			var target any
+			if test.wantStatus == http.StatusCreated {
+				target = &session
+			}
+			postJSON(t, relay.URL+"/auth/register", "", payload, test.wantStatus, target)
+
+			if test.wantStatus == http.StatusCreated {
+				if len(session.Device.EncryptionPublicKey) != 32 || len(session.Device.SigningPublicKey) != 32 {
+					t.Fatalf("registered public key lengths = (%d, %d), want (32, 32)", len(session.Device.EncryptionPublicKey), len(session.Device.SigningPublicKey))
+				}
+			}
+		})
+	}
+}
+
+func TestRegisterValidatesUsernameForIdentityVerification(t *testing.T) {
+	ctx := context.Background()
+	database, err := db.Open(ctx, ":memory:")
+	if err != nil {
+		t.Fatalf("db.Open() error = %v", err)
+	}
+	t.Cleanup(func() { database.Close() })
+
+	blobStore, err := storage.NewLocal(t.TempDir())
+	if err != nil {
+		t.Fatalf("storage.NewLocal() error = %v", err)
+	}
+
+	relay := httptest.NewServer(New(database, blobStore, 7).Handler())
+	t.Cleanup(relay.Close)
+
+	validKey := bytes.Repeat([]byte{0x01}, 32)
+	tests := []struct {
+		name         string
+		username     string
+		wantStatus   int
+		wantUsername string
+	}{
+		{
+			name:         "trims a non-empty username",
+			username:     "  trimmed-username  ",
+			wantStatus:   http.StatusCreated,
+			wantUsername: "trimmed-username",
+		},
+		{
+			name:         "allows exactly 128 UTF-8 bytes",
+			username:     strings.Repeat("é", 64),
+			wantStatus:   http.StatusCreated,
+			wantUsername: strings.Repeat("é", 64),
+		},
+		{
+			name:       "rejects empty after trimming",
+			username:   " \t\n ",
+			wantStatus: http.StatusBadRequest,
+		},
+		{
+			name:       "rejects more than 128 UTF-8 bytes",
+			username:   strings.Repeat("é", 65),
+			wantStatus: http.StatusBadRequest,
+		},
+		{
+			name:       "rejects ASCII control character",
+			username:   "control\x00character",
+			wantStatus: http.StatusBadRequest,
+		},
+		{
+			name:       "rejects non-ASCII Unicode control character",
+			username:   "control\u0085character",
+			wantStatus: http.StatusBadRequest,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var session authSessionResponse
+			var target any
+			if test.wantStatus == http.StatusCreated {
+				target = &session
+			}
+			postJSON(t, relay.URL+"/auth/register", "", registerRequest{
+				Username:            test.username,
+				DeviceName:          "test device",
+				EncryptionPublicKey: validKey,
+				SigningPublicKey:    validKey,
+			}, test.wantStatus, target)
+
+			if test.wantStatus == http.StatusCreated && session.User.Username != test.wantUsername {
+				t.Fatalf("registered username = %q, want %q", session.User.Username, test.wantUsername)
+			}
+		})
+	}
+
+	encodedKey := base64.StdEncoding.EncodeToString(validKey)
+	invalidUTF8Body := append([]byte(`{"username":"invalid-`), 0xff)
+	invalidUTF8Body = append(invalidUTF8Body, []byte(`","deviceName":"test device","encryptionPublicKey":"`)...)
+	invalidUTF8Body = append(invalidUTF8Body, encodedKey...)
+	invalidUTF8Body = append(invalidUTF8Body, []byte(`","signingPublicKey":"`)...)
+	invalidUTF8Body = append(invalidUTF8Body, encodedKey...)
+	invalidUTF8Body = append(invalidUTF8Body, []byte(`"}`)...)
+	request := authedRequest(t, http.MethodPost, relay.URL+"/auth/register", "", bytes.NewReader(invalidUTF8Body))
+	request.Header.Set("Content-Type", "application/json")
+	doRequest(t, request, http.StatusBadRequest, nil)
+}
+
+func TestUploadRejectsInvalidAuthenticatedEnvelopeBeforeBlobWrite(t *testing.T) {
+	ctx := context.Background()
+	database, err := db.Open(ctx, ":memory:")
+	if err != nil {
+		t.Fatalf("db.Open() error = %v", err)
+	}
+	t.Cleanup(func() { database.Close() })
+
+	localBlobStore, err := storage.NewLocal(t.TempDir())
+	if err != nil {
+		t.Fatalf("storage.NewLocal() error = %v", err)
+	}
+	blobStore := &writeTrackingStore{Store: localBlobStore}
+
+	relay := httptest.NewServer(New(database, blobStore, 7).Handler())
+	t.Cleanup(relay.Close)
+
+	alice := registerTestDevice(t, relay.URL, "envelope-alice")
+	bob := registerTestDevice(t, relay.URL, "envelope-bob")
+	invite := createInvite(t, relay.URL, alice.BearerToken)
+	_ = acceptInvite(t, relay.URL, bob.BearerToken, invite.Code)
+
+	tests := []struct {
+		name   string
+		mutate func(map[string]any)
+	}{
+		{
+			name: "legacy version",
+			mutate: func(envelope map[string]any) {
+				envelope["version"] = 1
+			},
+		},
+		{
+			name: "malformed field type",
+			mutate: func(envelope map[string]any) {
+				envelope["version"] = "2"
+			},
+		},
+		{
+			name: "unknown envelope field",
+			mutate: func(envelope map[string]any) {
+				envelope["futureUnsignedField"] = "poison"
+			},
+		},
+		{
+			name: "malformed client message ID",
+			mutate: func(envelope map[string]any) {
+				envelope["clientMessageID"] = "not-a-uuid"
+			},
+		},
+		{
+			name: "zero client message ID",
+			mutate: func(envelope map[string]any) {
+				envelope["clientMessageID"] = "00000000-0000-0000-0000-000000000000"
+			},
+		},
+		{
+			name: "sender device mismatch",
+			mutate: func(envelope map[string]any) {
+				envelope["senderDeviceID"] = mustID()
+			},
+		},
+		{
+			name: "recipient device mismatch",
+			mutate: func(envelope map[string]any) {
+				envelope["recipientDeviceID"] = mustID()
+			},
+		},
+		{
+			name: "sender identity digest too short",
+			mutate: func(envelope map[string]any) {
+				envelope["senderIdentityDigest"] = bytes.Repeat([]byte{0x01}, 31)
+			},
+		},
+		{
+			name: "recipient identity digest too long",
+			mutate: func(envelope map[string]any) {
+				envelope["recipientIdentityDigest"] = bytes.Repeat([]byte{0x02}, 33)
+			},
+		},
+		{
+			name: "malformed identity digest base64",
+			mutate: func(envelope map[string]any) {
+				envelope["senderIdentityDigest"] = "not-base64!"
+			},
+		},
+		{
+			name: "wrong authentication algorithm",
+			mutate: func(envelope map[string]any) {
+				envelope["authenticationAlgorithm"] = "ed25519"
+			},
+		},
+		{
+			name: "signature too short",
+			mutate: func(envelope map[string]any) {
+				envelope["signature"] = bytes.Repeat([]byte{0x03}, 63)
+			},
+		},
+		{
+			name: "malformed signature base64",
+			mutate: func(envelope map[string]any) {
+				envelope["signature"] = "not-base64!"
+			},
+		},
+		{
+			name: "signature too long",
+			mutate: func(envelope map[string]any) {
+				envelope["signature"] = bytes.Repeat([]byte{0x03}, 65)
+			},
+		},
+		{
+			name: "wrong media algorithm",
+			mutate: func(envelope map[string]any) {
+				envelope["media"].(map[string]any)["algorithm"] = "xchacha20poly1305"
+			},
+		},
+		{
+			name: "unknown media field",
+			mutate: func(envelope map[string]any) {
+				envelope["media"].(map[string]any)["unsignedCaption"] = "poison"
+			},
+		},
+		{
+			name: "media nonce too short",
+			mutate: func(envelope map[string]any) {
+				envelope["media"].(map[string]any)["nonce"] = bytes.Repeat([]byte{0x04}, 23)
+			},
+		},
+		{
+			name: "media nonce too long",
+			mutate: func(envelope map[string]any) {
+				envelope["media"].(map[string]any)["nonce"] = bytes.Repeat([]byte{0x04}, 25)
+			},
+		},
+		{
+			name: "malformed media nonce base64",
+			mutate: func(envelope map[string]any) {
+				envelope["media"].(map[string]any)["nonce"] = "not-base64!"
+			},
+		},
+		{
+			name: "media ciphertext hash too short",
+			mutate: func(envelope map[string]any) {
+				envelope["media"].(map[string]any)["ciphertextHash"] = bytes.Repeat([]byte{0x04}, 31)
+			},
+		},
+		{
+			name: "media ciphertext hash too long",
+			mutate: func(envelope map[string]any) {
+				envelope["media"].(map[string]any)["ciphertextHash"] = bytes.Repeat([]byte{0x04}, 33)
+			},
+		},
+		{
+			name: "missing media ciphertext hash",
+			mutate: func(envelope map[string]any) {
+				delete(envelope["media"].(map[string]any), "ciphertextHash")
+			},
+		},
+		{
+			name: "missing media MIME type",
+			mutate: func(envelope map[string]any) {
+				delete(envelope["media"].(map[string]any), "mimeType")
+			},
+		},
+		{
+			name: "wrong media MIME type field type",
+			mutate: func(envelope map[string]any) {
+				envelope["media"].(map[string]any)["mimeType"] = 42
+			},
+		},
+		{
+			name: "empty media MIME type",
+			mutate: func(envelope map[string]any) {
+				envelope["media"].(map[string]any)["mimeType"] = ""
+			},
+		},
+		{
+			name: "oversized media MIME type",
+			mutate: func(envelope map[string]any) {
+				envelope["media"].(map[string]any)["mimeType"] = strings.Repeat("m", maxEnvelopeMIMETypeUTF8Bytes+1)
+			},
+		},
+		{
+			name: "wrong media duration field type",
+			mutate: func(envelope map[string]any) {
+				envelope["media"].(map[string]any)["durationSeconds"] = "NaN"
+			},
+		},
+		{
+			name: "negative media duration",
+			mutate: func(envelope map[string]any) {
+				envelope["media"].(map[string]any)["durationSeconds"] = -0.001
+			},
+		},
+		{
+			name: "overflowing media duration exponent",
+			mutate: func(envelope map[string]any) {
+				envelope["media"].(map[string]any)["durationSeconds"] = json.RawMessage("1e999")
+			},
+		},
+		{
+			name: "finite media duration overflows canonical milliseconds",
+			mutate: func(envelope map[string]any) {
+				envelope["media"].(map[string]any)["durationSeconds"] = 1e308
+			},
+		},
+		{
+			name: "wrong content key algorithm",
+			mutate: func(envelope map[string]any) {
+				envelope["contentKey"].(map[string]any)["algorithm"] = "crypto-box-seal"
+			},
+		},
+		{
+			name: "content key too short",
+			mutate: func(envelope map[string]any) {
+				envelope["contentKey"].(map[string]any)["encryptedContentKey"] = bytes.Repeat([]byte{0x05}, 79)
+			},
+		},
+		{
+			name: "content key too long",
+			mutate: func(envelope map[string]any) {
+				envelope["contentKey"].(map[string]any)["encryptedContentKey"] = bytes.Repeat([]byte{0x05}, 81)
+			},
+		},
+		{
+			name: "missing content key",
+			mutate: func(envelope map[string]any) {
+				delete(envelope, "contentKey")
+			},
+		},
+		{
+			name: "malformed content key base64",
+			mutate: func(envelope map[string]any) {
+				envelope["contentKey"].(map[string]any)["encryptedContentKey"] = "not-base64!"
+			},
+		},
+		{
+			name: "unknown content key field",
+			mutate: func(envelope map[string]any) {
+				envelope["contentKey"].(map[string]any)["untrustedHint"] = "poison"
+			},
+		},
+		{
+			name: "wrong recipient fingerprint field type",
+			mutate: func(envelope map[string]any) {
+				envelope["contentKey"].(map[string]any)["recipientPublicKeyFingerprint"] = true
+			},
+		},
+		{
+			name: "empty recipient fingerprint",
+			mutate: func(envelope map[string]any) {
+				envelope["contentKey"].(map[string]any)["recipientPublicKeyFingerprint"] = ""
+			},
+		},
+		{
+			name: "oversized recipient fingerprint",
+			mutate: func(envelope map[string]any) {
+				envelope["contentKey"].(map[string]any)["recipientPublicKeyFingerprint"] = strings.Repeat("f", maxKeyFingerprintUTF8Bytes+1)
+			},
+		},
+		{
+			name: "wrong optional sender content key algorithm",
+			mutate: func(envelope map[string]any) {
+				key := validTestContentKeyValue(0x06)
+				key["algorithm"] = "crypto-box-seal"
+				envelope["senderContentKey"] = key
+			},
+		},
+		{
+			name: "optional sender content key too short",
+			mutate: func(envelope map[string]any) {
+				key := validTestContentKeyValue(0x06)
+				key["encryptedContentKey"] = bytes.Repeat([]byte{0x06}, 79)
+				envelope["senderContentKey"] = key
+			},
+		},
+		{
+			name: "optional sender content key too long",
+			mutate: func(envelope map[string]any) {
+				key := validTestContentKeyValue(0x06)
+				key["encryptedContentKey"] = bytes.Repeat([]byte{0x06}, 81)
+				envelope["senderContentKey"] = key
+			},
+		},
+		{
+			name: "optional sender content key missing sealed key",
+			mutate: func(envelope map[string]any) {
+				envelope["senderContentKey"] = map[string]any{"algorithm": "crypto_box_seal"}
+			},
+		},
+		{
+			name: "optional sender content key control-character fingerprint",
+			mutate: func(envelope map[string]any) {
+				key := validTestContentKeyValue(0x06)
+				key["recipientPublicKeyFingerprint"] = "fingerprint\n"
+				envelope["senderContentKey"] = key
+			},
+		},
+		{
+			name: "wrong optional thumbnail algorithm",
+			mutate: func(envelope map[string]any) {
+				thumbnail := validTestThumbnailValue()
+				thumbnail["algorithm"] = "xchacha20poly1305"
+				envelope["media"].(map[string]any)["thumbnail"] = thumbnail
+			},
+		},
+		{
+			name: "optional thumbnail nonce too short",
+			mutate: func(envelope map[string]any) {
+				thumbnail := validTestThumbnailValue()
+				thumbnail["nonce"] = bytes.Repeat([]byte{0x06}, 23)
+				envelope["media"].(map[string]any)["thumbnail"] = thumbnail
+			},
+		},
+		{
+			name: "optional thumbnail nonce too long",
+			mutate: func(envelope map[string]any) {
+				thumbnail := validTestThumbnailValue()
+				thumbnail["nonce"] = bytes.Repeat([]byte{0x06}, 25)
+				envelope["media"].(map[string]any)["thumbnail"] = thumbnail
+			},
+		},
+		{
+			name: "optional thumbnail missing blob path",
+			mutate: func(envelope map[string]any) {
+				thumbnail := validTestThumbnailValue()
+				delete(thumbnail, "encryptedBlobPath")
+				envelope["media"].(map[string]any)["thumbnail"] = thumbnail
+			},
+		},
+		{
+			name: "optional thumbnail empty blob path",
+			mutate: func(envelope map[string]any) {
+				thumbnail := validTestThumbnailValue()
+				thumbnail["encryptedBlobPath"] = ""
+				envelope["media"].(map[string]any)["thumbnail"] = thumbnail
+			},
+		},
+		{
+			name: "optional thumbnail oversized blob path",
+			mutate: func(envelope map[string]any) {
+				thumbnail := validTestThumbnailValue()
+				thumbnail["encryptedBlobPath"] = strings.Repeat("p", maxThumbnailPathUTF8Bytes+1)
+				envelope["media"].(map[string]any)["thumbnail"] = thumbnail
+			},
+		},
+		{
+			name: "optional thumbnail missing ciphertext hash",
+			mutate: func(envelope map[string]any) {
+				thumbnail := validTestThumbnailValue()
+				delete(thumbnail, "ciphertextHash")
+				envelope["media"].(map[string]any)["thumbnail"] = thumbnail
+			},
+		},
+		{
+			name: "optional thumbnail ciphertext hash too short",
+			mutate: func(envelope map[string]any) {
+				thumbnail := validTestThumbnailValue()
+				thumbnail["ciphertextHash"] = bytes.Repeat([]byte{0x07}, 31)
+				envelope["media"].(map[string]any)["thumbnail"] = thumbnail
+			},
+		},
+		{
+			name: "optional thumbnail ciphertext hash too long",
+			mutate: func(envelope map[string]any) {
+				thumbnail := validTestThumbnailValue()
+				thumbnail["ciphertextHash"] = bytes.Repeat([]byte{0x07}, 33)
+				envelope["media"].(map[string]any)["thumbnail"] = thumbnail
+			},
+		},
+		{
+			name: "unknown optional thumbnail field",
+			mutate: func(envelope map[string]any) {
+				thumbnail := validTestThumbnailValue()
+				thumbnail["plaintextHint"] = "poison"
+				envelope["media"].(map[string]any)["thumbnail"] = thumbnail
+			},
+		},
+		{
+			name: "missing created at",
+			mutate: func(envelope map[string]any) {
+				delete(envelope, "createdAt")
+			},
+		},
+		{
+			name: "invalid created at",
+			mutate: func(envelope map[string]any) {
+				envelope["createdAt"] = "not-a-timestamp"
+			},
+		},
+		{
+			name: "wrong created at field type",
+			mutate: func(envelope map[string]any) {
+				envelope["createdAt"] = 1_785_691_112
+			},
+		},
+		{
+			name: "fractional created at not accepted by Foundation ISO8601 strategy",
+			mutate: func(envelope map[string]any) {
+				envelope["createdAt"] = "2026-08-02T17:18:32.125Z"
+			},
+		},
+		{
+			name: "offset created at rejected in favor of one cross-platform encoding",
+			mutate: func(envelope map[string]any) {
+				envelope["createdAt"] = "2026-08-02T12:18:32-05:00"
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			envelopeValue := validTestEnvelopeValue(alice.Device.ID, bob.Device.ID)
+			test.mutate(envelopeValue)
+			envelope, err := json.Marshal(envelopeValue)
+			if err != nil {
+				t.Fatalf("marshal envelope: %v", err)
+			}
+
+			status := uploadTestMessageStatus(
+				t,
+				relay.URL,
+				alice.BearerToken,
+				bob.User.ID,
+				bob.Device.ID,
+				envelope,
+				[]byte("ciphertext-video"),
+			)
+			if status != http.StatusBadRequest {
+				t.Fatalf("upload status = %d, want %d", status, http.StatusBadRequest)
+			}
+
+			if blobStore.writes != 0 {
+				t.Fatalf("invalid envelope called blob store Write %d times, want 0", blobStore.writes)
+			}
+		})
+	}
+
+	var messages []messageResponse
+	getJSON(t, relay.URL+"/messages", bob.BearerToken, http.StatusOK, &messages)
+	if len(messages) != 0 {
+		t.Fatalf("invalid envelopes poisoned message list with %d stored messages, want 0", len(messages))
+	}
+}
+
+func TestUploadRejectsOversizedAndUnknownMetadataBeforeBlobWrite(t *testing.T) {
+	ctx := context.Background()
+	database, err := db.Open(ctx, ":memory:")
+	if err != nil {
+		t.Fatalf("db.Open() error = %v", err)
+	}
+	t.Cleanup(func() { database.Close() })
+
+	localBlobStore, err := storage.NewLocal(t.TempDir())
+	if err != nil {
+		t.Fatalf("storage.NewLocal() error = %v", err)
+	}
+	blobStore := &writeTrackingStore{Store: localBlobStore}
+	relay := httptest.NewServer(New(database, blobStore, 7).Handler())
+	t.Cleanup(relay.Close)
+
+	alice := registerTestDevice(t, relay.URL, "metadata-alice")
+	recipientID := mustID()
+	recipientDeviceID := mustID()
+
+	tests := []struct {
+		name       string
+		wantStatus int
+		mutate     func(map[string]any)
+	}{
+		{
+			name:       "unknown metadata field",
+			wantStatus: http.StatusBadRequest,
+			mutate: func(metadata map[string]any) {
+				metadata["unsignedPadding"] = "poison"
+			},
+		},
+		{
+			name:       "oversized authenticated envelope",
+			wantStatus: http.StatusBadRequest,
+			mutate: func(metadata map[string]any) {
+				envelopeValue := validTestEnvelopeValue(alice.Device.ID, recipientDeviceID)
+				envelopeValue["unknownPadding"] = strings.Repeat("e", maxAuthenticatedEnvelopeBytes)
+				envelope, err := json.Marshal(envelopeValue)
+				if err != nil {
+					t.Fatalf("marshal oversized envelope: %v", err)
+				}
+				if len(envelope) <= maxAuthenticatedEnvelopeBytes {
+					t.Fatalf("oversized envelope length = %d, want more than %d", len(envelope), maxAuthenticatedEnvelopeBytes)
+				}
+				metadata["envelope"] = json.RawMessage(envelope)
+			},
+		},
+		{
+			name:       "oversized metadata part",
+			wantStatus: http.StatusRequestEntityTooLarge,
+			mutate: func(metadata map[string]any) {
+				metadata["unsignedPadding"] = strings.Repeat("m", maxUploadMetadataBytes)
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			metadata := map[string]any{
+				"recipientID":       recipientID,
+				"recipientDeviceID": recipientDeviceID,
+				"envelope":          validTestEnvelope(t, alice.Device.ID, recipientDeviceID),
+				"blobSize":          1,
+			}
+			test.mutate(metadata)
+			metadataJSON, err := json.Marshal(metadata)
+			if err != nil {
+				t.Fatalf("marshal metadata: %v", err)
+			}
+			if test.wantStatus == http.StatusRequestEntityTooLarge && len(metadataJSON) <= maxUploadMetadataBytes {
+				t.Fatalf("oversized metadata length = %d, want more than %d", len(metadataJSON), maxUploadMetadataBytes)
+			}
+
+			request := newUploadRequestWithMetadata(t, relay.URL, alice.BearerToken, metadataJSON, []byte("x"))
+			response, err := http.DefaultClient.Do(request)
+			if err != nil {
+				t.Fatalf("upload metadata: %v", err)
+			}
+			response.Body.Close()
+			if response.StatusCode != test.wantStatus {
+				t.Fatalf("upload status = %d, want %d", response.StatusCode, test.wantStatus)
+			}
+			if blobStore.writes != 0 {
+				t.Fatalf("invalid metadata called blob store Write %d times, want 0", blobStore.writes)
+			}
+		})
+	}
+}
+
+func TestUploadAcceptsAuthenticatedEnvelopeOptionalStructures(t *testing.T) {
+	ctx := context.Background()
+	database, err := db.Open(ctx, ":memory:")
+	if err != nil {
+		t.Fatalf("db.Open() error = %v", err)
+	}
+	t.Cleanup(func() { database.Close() })
+
+	blobStore, err := storage.NewLocal(t.TempDir())
+	if err != nil {
+		t.Fatalf("storage.NewLocal() error = %v", err)
+	}
+
+	relay := httptest.NewServer(New(database, blobStore, 7).Handler())
+	t.Cleanup(relay.Close)
+
+	alice := registerTestDevice(t, relay.URL, "optional-alice")
+	bob := registerTestDevice(t, relay.URL, "optional-bob")
+	invite := createInvite(t, relay.URL, alice.BearerToken)
+	_ = acceptInvite(t, relay.URL, bob.BearerToken, invite.Code)
+
+	tests := []struct {
+		name   string
+		mutate func(map[string]any)
+	}{
+		{
+			name: "explicit null optionals",
+			mutate: func(envelope map[string]any) {
+				envelope["senderContentKey"] = nil
+				media := envelope["media"].(map[string]any)
+				media["durationSeconds"] = nil
+				media["thumbnail"] = nil
+				envelope["contentKey"].(map[string]any)["recipientPublicKeyFingerprint"] = nil
+			},
+		},
+		{
+			name: "valid finite duration",
+			mutate: func(envelope map[string]any) {
+				envelope["media"].(map[string]any)["durationSeconds"] = 42.125
+			},
+		},
+		{
+			name: "valid optional sender content key",
+			mutate: func(envelope map[string]any) {
+				key := validTestContentKeyValue(0x06)
+				key["recipientPublicKeyFingerprint"] = "j0DFrbaPJWJK5bIU6nZ6bg=="
+				envelope["senderContentKey"] = key
+			},
+		},
+		{
+			name: "valid recipient key fingerprint",
+			mutate: func(envelope map[string]any) {
+				envelope["contentKey"].(map[string]any)["recipientPublicKeyFingerprint"] = "eaYx7t4b+cmPEgMs3q3Q5w=="
+			},
+		},
+		{
+			name: "valid optional thumbnail",
+			mutate: func(envelope map[string]any) {
+				envelope["media"].(map[string]any)["thumbnail"] = validTestThumbnailValue()
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			envelopeValue := validTestEnvelopeValue(alice.Device.ID, bob.Device.ID)
+			test.mutate(envelopeValue)
+			envelope, err := json.Marshal(envelopeValue)
+			if err != nil {
+				t.Fatalf("marshal envelope: %v", err)
+			}
+
+			status := uploadTestMessageStatus(
+				t,
+				relay.URL,
+				alice.BearerToken,
+				bob.User.ID,
+				bob.Device.ID,
+				envelope,
+				[]byte("ciphertext-video"),
+			)
+			if status != http.StatusCreated {
+				t.Fatalf("upload status = %d, want %d", status, http.StatusCreated)
+			}
+		})
+	}
+}
+
+func TestAuthenticatedEnvelopeFixedVectorsMatchRelayWireSchema(t *testing.T) {
+	fixturePath := filepath.Join("..", "..", "..", "testdata", "protocol", "kithra-identity-v1-message-v2.json")
+	fixtureData, err := os.ReadFile(fixturePath)
+	if err != nil {
+		t.Fatalf("read protocol vectors: %v", err)
+	}
+
+	var fixture struct {
+		MessageEnvelopeV2 struct {
+			Cases []struct {
+				Name     string          `json:"name"`
+				Envelope json.RawMessage `json:"envelope"`
+			} `json:"cases"`
+		} `json:"messageEnvelopeV2"`
+	}
+	if err := json.Unmarshal(fixtureData, &fixture); err != nil {
+		t.Fatalf("decode protocol vectors: %v", err)
+	}
+	if len(fixture.MessageEnvelopeV2.Cases) == 0 {
+		t.Fatal("protocol vectors contain no authenticated message cases")
+	}
+
+	for _, testCase := range fixture.MessageEnvelopeV2.Cases {
+		t.Run(testCase.Name, func(t *testing.T) {
+			var route struct {
+				SenderDeviceID    string `json:"senderDeviceID"`
+				RecipientDeviceID string `json:"recipientDeviceID"`
+			}
+			if err := json.Unmarshal(testCase.Envelope, &route); err != nil {
+				t.Fatalf("decode vector route: %v", err)
+			}
+			if err := validateAuthenticatedEnvelope(
+				testCase.Envelope,
+				route.SenderDeviceID,
+				route.RecipientDeviceID,
+			); err != nil {
+				t.Fatalf("relay rejected Swift-decoded protocol vector: %v", err)
+			}
+		})
+	}
+}
+
 func TestDeleteAccountRemovesServerRecordsAndBlobs(t *testing.T) {
 	ctx := context.Background()
 	database, err := db.Open(ctx, ":memory:")
@@ -126,7 +990,7 @@ func TestDeleteAccountRemovesServerRecordsAndBlobs(t *testing.T) {
 
 	invite := createInvite(t, relay.URL, alice.BearerToken)
 	_ = acceptInvite(t, relay.URL, bob.BearerToken, invite.Code)
-	envelope := json.RawMessage(`{"version":1,"algorithm":"xchacha20poly1305","encryptedContentKey":"ZmFrZQ==","nonce":"bm9uY2U="}`)
+	envelope := validTestEnvelope(t, alice.Device.ID, bob.Device.ID)
 	message := uploadTestMessage(t, relay.URL, alice.BearerToken, bob.User.ID, bob.Device.ID, envelope, []byte("pending-ciphertext-video"))
 
 	if statusCode := downloadMessageStatus(t, relay.URL, bob.BearerToken, message.ID); statusCode != http.StatusOK {
@@ -216,7 +1080,7 @@ func TestBlockContactRemovesContactAndRejectsBlockedSender(t *testing.T) {
 	}
 	assertHasContact(t, relay.URL, bob.BearerToken, alice.User.ID)
 
-	envelope := json.RawMessage(`{"version":1,"algorithm":"xchacha20poly1305","encryptedContentKey":"ZmFrZQ==","nonce":"bm9uY2U="}`)
+	envelope := validTestEnvelope(t, bob.Device.ID, alice.Device.ID)
 	statusCode := uploadTestMessageStatus(t, relay.URL, bob.BearerToken, alice.User.ID, alice.Device.ID, envelope, []byte("blocked-ciphertext-video"))
 	if statusCode != http.StatusForbidden {
 		t.Fatalf("blocked sender upload status = %d, want %d", statusCode, http.StatusForbidden)
@@ -270,6 +1134,53 @@ func registerTestDevice(t *testing.T, baseURL string, username string) authSessi
 		SigningPublicKey:    []byte(strings.Repeat("s", 32)),
 	}, http.StatusCreated, &session)
 	return session
+}
+
+func validTestEnvelope(t *testing.T, senderDeviceID string, recipientDeviceID string) json.RawMessage {
+	t.Helper()
+
+	envelope, err := json.Marshal(validTestEnvelopeValue(senderDeviceID, recipientDeviceID))
+	if err != nil {
+		t.Fatalf("marshal valid envelope: %v", err)
+	}
+	return envelope
+}
+
+func validTestEnvelopeValue(senderDeviceID string, recipientDeviceID string) map[string]any {
+	return map[string]any{
+		"version":                 2,
+		"clientMessageID":         mustID(),
+		"senderDeviceID":          senderDeviceID,
+		"recipientDeviceID":       recipientDeviceID,
+		"senderIdentityDigest":    bytes.Repeat([]byte{0x01}, 32),
+		"recipientIdentityDigest": bytes.Repeat([]byte{0x02}, 32),
+		"authenticationAlgorithm": "Ed25519",
+		"signature":               bytes.Repeat([]byte{0x03}, 64),
+		"media": map[string]any{
+			"algorithm":      "XChaCha20-Poly1305",
+			"nonce":          bytes.Repeat([]byte{0x04}, 24),
+			"ciphertextHash": bytes.Repeat([]byte{0x04}, 32),
+			"mimeType":       "video/mp4",
+		},
+		"contentKey": validTestContentKeyValue(0x05),
+		"createdAt":  time.Now().UTC().Truncate(time.Second).Format(authenticatedCreatedAtLayout),
+	}
+}
+
+func validTestContentKeyValue(fill byte) map[string]any {
+	return map[string]any{
+		"algorithm":           "crypto_box_seal",
+		"encryptedContentKey": bytes.Repeat([]byte{fill}, 80),
+	}
+}
+
+func validTestThumbnailValue() map[string]any {
+	return map[string]any{
+		"algorithm":         "XChaCha20-Poly1305",
+		"nonce":             bytes.Repeat([]byte{0x06}, 24),
+		"encryptedBlobPath": "encrypted-thumbnails/example.bin",
+		"ciphertextHash":    bytes.Repeat([]byte{0x07}, 32),
+	}
 }
 
 func createInvite(t *testing.T, baseURL string, token string) inviteResponse {
@@ -340,9 +1251,6 @@ func uploadTestMessageStatus(t *testing.T, baseURL string, token string, recipie
 func newUploadRequest(t *testing.T, baseURL string, token string, recipientID string, recipientDeviceID string, envelope json.RawMessage, blob []byte) *http.Request {
 	t.Helper()
 
-	var body bytes.Buffer
-	writer := multipart.NewWriter(&body)
-
 	metadata, err := json.Marshal(uploadMetadata{
 		RecipientID:       recipientID,
 		RecipientDeviceID: recipientDeviceID,
@@ -353,6 +1261,14 @@ func newUploadRequest(t *testing.T, baseURL string, token string, recipientID st
 	if err != nil {
 		t.Fatalf("marshal metadata: %v", err)
 	}
+	return newUploadRequestWithMetadata(t, baseURL, token, metadata, blob)
+}
+
+func newUploadRequestWithMetadata(t *testing.T, baseURL string, token string, metadata []byte, blob []byte) *http.Request {
+	t.Helper()
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
 
 	metadataPart, err := writer.CreateFormField("metadata")
 	if err != nil {

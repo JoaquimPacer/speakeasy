@@ -240,6 +240,8 @@ private struct ContactAction: Identifiable, Hashable {
 }
 
 private struct ConversationRow: View {
+    @EnvironmentObject private var appState: AppState
+
     let conversation: ConversationSummary
 
     var body: some View {
@@ -279,6 +281,13 @@ private struct ConversationRow: View {
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
+
+                    Spacer(minLength: 4)
+
+                    ContactTrustBadge(
+                        state: appState.trustState(for: conversation.contact),
+                        compact: true
+                    )
                 }
             }
 

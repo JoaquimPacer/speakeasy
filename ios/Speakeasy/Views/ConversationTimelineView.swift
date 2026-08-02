@@ -9,8 +9,17 @@ struct ConversationTimelineView: View {
     @StateObject private var recorder = InlineVideoRecorder()
     @State private var inlinePlayback: InlinePlayback?
     @State private var selectedMessageID: UUID?
+    @State private var showingContactSecurity = false
 
     let contact: Contact
+
+    private var currentContact: Contact {
+        appState.contacts.first { $0.contactID == contact.contactID } ?? contact
+    }
+
+    private var trustState: ContactTrustState {
+        appState.trustState(for: currentContact)
+    }
 
     private var messages: [Message] {
         appState.messages(for: contact)
@@ -28,6 +37,12 @@ struct ConversationTimelineView: View {
                 header
                     .padding(.top, 12)
                     .padding(.horizontal, 18)
+
+                if trustState != .verified, inlinePlayback == nil {
+                    verificationNotice
+                        .padding(.top, 12)
+                        .padding(.horizontal, 18)
+                }
 
                 Spacer(minLength: 24)
 
@@ -58,6 +73,14 @@ struct ConversationTimelineView: View {
         }
         .task(id: contact.id) {
             await appState.refreshQuietly()
+        }
+        .sheet(isPresented: $showingContactSecurity, onDismiss: {
+            recorder.prepare()
+        }) {
+            NavigationStack {
+                ContactSecurityView(contact: currentContact)
+            }
+            .environmentObject(appState)
         }
     }
 
@@ -127,12 +150,21 @@ struct ConversationTimelineView: View {
             Spacer()
 
             VStack(spacing: 8) {
-                Text(contact.displayName)
+                Text(currentContact.displayName)
                     .font(.title2.weight(.semibold))
                     .foregroundStyle(.white)
                     .shadow(color: .black.opacity(0.45), radius: 3, x: 0, y: 1)
                     .lineLimit(1)
                     .minimumScaleFactor(0.7)
+
+                Button {
+                    openContactSecurity()
+                } label: {
+                    ContactTrustBadge(state: trustState)
+                }
+                .buttonStyle(.plain)
+                .disabled(recorder.isRecording || appState.isWorking)
+                .accessibilityHint("Opens safety-number and QR-code verification")
 
                 if recorder.isRecording {
                     Label("Recording", systemImage: "circle.fill")
@@ -204,7 +236,49 @@ struct ConversationTimelineView: View {
             }
         }
         .accessibilityLabel(recorder.isRecording ? "Stop recording" : "Record video")
-        .disabled(!recorder.isReady || appState.isWorking)
+        .accessibilityHint(recordingAccessibilityHint)
+        .disabled(
+            !recorder.isReady ||
+                appState.isWorking ||
+                (!recorder.isRecording && trustState != .verified)
+        )
+    }
+
+    private var verificationNotice: some View {
+        Button {
+            openContactSecurity()
+        } label: {
+            HStack(spacing: 10) {
+                Image(systemName: trustState == .keyChanged ? "exclamationmark.shield.fill" : "shield")
+                    .font(.title3.weight(.semibold))
+                    .accessibilityHidden(true)
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(trustState == .keyChanged ? "Safety number changed" : "Verify before recording")
+                        .font(.subheadline.weight(.semibold))
+                    Text(trustState == .keyChanged
+                         ? "Confirm the new identity before continuing."
+                         : "Compare the safety number or scan both QR codes.")
+                        .font(.caption)
+                        .opacity(0.86)
+                }
+
+                Spacer()
+
+                Image(systemName: "chevron.right")
+                    .font(.caption.weight(.bold))
+                    .accessibilityHidden(true)
+            }
+            .foregroundStyle(.white)
+            .padding(12)
+            .background(
+                trustState == .keyChanged ? Color.red.opacity(0.86) : Color.orange.opacity(0.82),
+                in: RoundedRectangle(cornerRadius: 8)
+            )
+        }
+        .buttonStyle(.plain)
+        .disabled(recorder.isRecording || appState.isWorking)
+        .accessibilityHint("Opens contact security")
     }
 
     private var historyStrip: some View {
@@ -281,10 +355,28 @@ struct ConversationTimelineView: View {
 
     private func sendRecordedVideo(_ url: URL) {
         Task {
-            await appState.sendVideo(rawVideoURL: url, quality: .compact480p, to: contact)
+            await appState.sendVideo(rawVideoURL: url, quality: .compact480p, to: currentContact)
             await appState.mediaPipeline.cleanupTemporaryFiles([url])
             await appState.refreshQuietly()
         }
+    }
+
+    private var recordingAccessibilityHint: String {
+        guard !recorder.isRecording, trustState != .verified else {
+            return ""
+        }
+        return trustState == .keyChanged
+            ? "Recording is paused until you verify the changed safety number"
+            : "Recording is paused until you verify this contact"
+    }
+
+    private func openContactSecurity() {
+        guard !recorder.isRecording else {
+            return
+        }
+        clearInlinePlayback()
+        recorder.stopSession()
+        showingContactSecurity = true
     }
 
     private func play(_ message: Message) {
@@ -494,6 +586,9 @@ private final class InlineVideoRecorder: NSObject, ObservableObject, AVCaptureFi
         isDiscardingRecording = false
         isStoppingForFinalSend = false
         isSwitchingCameraDuringRecording = false
+        for staleSegmentURL in segmentURLs {
+            try? FileManager.default.removeItem(at: staleSegmentURL)
+        }
         segmentURLs.removeAll()
         startRecordingSegment()
     }
@@ -683,8 +778,12 @@ private final class InlineVideoRecorder: NSObject, ObservableObject, AVCaptureFi
                 do {
                     let outputURL = try await Self.combineSegments(segments)
                     DispatchQueue.main.async { [weak self] in
-                        self?.statusText = "Ready"
-                        self?.onFinishedRecording?(outputURL)
+                        guard let self, let onFinishedRecording = self.onFinishedRecording else {
+                            try? FileManager.default.removeItem(at: outputURL)
+                            return
+                        }
+                        self.statusText = "Ready"
+                        onFinishedRecording(outputURL)
                     }
                 } catch {
                     DispatchQueue.main.async { [weak self] in
@@ -717,98 +816,120 @@ private final class InlineVideoRecorder: NSObject, ObservableObject, AVCaptureFi
             return firstSegment
         }
 
-        let sourceSegments = try segments.map { segmentURL in
-            let asset = AVURLAsset(url: segmentURL)
-            guard let videoTrack = asset.tracks(withMediaType: .video).first else {
-                throw MediaPipelineError.exportFailed
-            }
-            return RecordedMovieSegment(
-                url: segmentURL,
-                asset: asset,
-                duration: asset.duration,
-                videoTrack: videoTrack,
-                audioTrack: asset.tracks(withMediaType: .audio).first,
-                renderSize: displaySize(for: videoTrack)
-            )
-        }
-        let renderSize = sourceSegments.reduce(sourceSegments[0].renderSize) { partial, segment in
-            CGSize(
-                width: max(partial.width, segment.renderSize.width),
-                height: max(partial.height, segment.renderSize.height)
-            )
-        }
-
-        let composition = AVMutableComposition()
-        guard let compositionVideoTrack = composition.addMutableTrack(
-            withMediaType: .video,
-            preferredTrackID: kCMPersistentTrackID_Invalid
-        ) else {
-            throw MediaPipelineError.exportFailed
-        }
-        let compositionAudioTrack = composition.addMutableTrack(
-            withMediaType: .audio,
-            preferredTrackID: kCMPersistentTrackID_Invalid
-        )
-
-        var cursor = CMTime.zero
-        var instructions: [AVVideoCompositionInstructionProtocol] = []
-        for segment in sourceSegments {
-            let range = CMTimeRange(start: .zero, duration: segment.duration)
-            try compositionVideoTrack.insertTimeRange(range, of: segment.videoTrack, at: cursor)
-
-            if let sourceAudioTrack = segment.audioTrack,
-               let compositionAudioTrack {
-                try compositionAudioTrack.insertTimeRange(range, of: sourceAudioTrack, at: cursor)
-            }
-
-            let instruction = AVMutableVideoCompositionInstruction()
-            instruction.timeRange = CMTimeRange(start: cursor, duration: segment.duration)
-            let layerInstruction = AVMutableVideoCompositionLayerInstruction(assetTrack: compositionVideoTrack)
-            layerInstruction.setTransform(
-                playbackTransform(for: segment.videoTrack, renderSize: renderSize),
-                at: cursor
-            )
-            instruction.layerInstructions = [layerInstruction]
-            instructions.append(instruction)
-
-            cursor = CMTimeAdd(cursor, segment.duration)
-        }
-
         let outputURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("kithra-inline-merged-\(UUID().uuidString)")
             .appendingPathExtension("mov")
-        if FileManager.default.fileExists(atPath: outputURL.path) {
-            try FileManager.default.removeItem(at: outputURL)
-        }
-        guard let exportSession = AVAssetExportSession(asset: composition, presetName: AVAssetExportPresetHighestQuality) else {
-            throw MediaPipelineError.exportSessionUnavailable
-        }
-        let exportBox = SendableMovieExportSession(exportSession)
-        exportBox.session.outputURL = outputURL
-        exportBox.session.outputFileType = .mov
-        exportBox.session.shouldOptimizeForNetworkUse = true
-        let videoComposition = AVMutableVideoComposition()
-        videoComposition.renderSize = renderSize
-        videoComposition.frameDuration = CMTime(value: 1, timescale: 30)
-        videoComposition.instructions = instructions
-        exportBox.session.videoComposition = videoComposition
 
-        return try await withCheckedThrowingContinuation { continuation in
-            exportBox.session.exportAsynchronously {
-                switch exportBox.session.status {
-                case .completed:
-                    for segmentURL in segments {
-                        try? FileManager.default.removeItem(at: segmentURL)
+        do {
+            let sourceSegments = try segments.map { segmentURL in
+                let asset = AVURLAsset(url: segmentURL)
+                guard let videoTrack = asset.tracks(withMediaType: .video).first else {
+                    throw MediaPipelineError.exportFailed
+                }
+                return RecordedMovieSegment(
+                    url: segmentURL,
+                    asset: asset,
+                    duration: asset.duration,
+                    videoTrack: videoTrack,
+                    audioTrack: asset.tracks(withMediaType: .audio).first,
+                    renderSize: displaySize(for: videoTrack)
+                )
+            }
+            let renderSize = sourceSegments.reduce(sourceSegments[0].renderSize) { partial, segment in
+                CGSize(
+                    width: max(partial.width, segment.renderSize.width),
+                    height: max(partial.height, segment.renderSize.height)
+                )
+            }
+
+            let composition = AVMutableComposition()
+            guard let compositionVideoTrack = composition.addMutableTrack(
+                withMediaType: .video,
+                preferredTrackID: kCMPersistentTrackID_Invalid
+            ) else {
+                throw MediaPipelineError.exportFailed
+            }
+            let compositionAudioTrack = composition.addMutableTrack(
+                withMediaType: .audio,
+                preferredTrackID: kCMPersistentTrackID_Invalid
+            )
+
+            var cursor = CMTime.zero
+            var instructions: [AVVideoCompositionInstructionProtocol] = []
+            for segment in sourceSegments {
+                let range = CMTimeRange(start: .zero, duration: segment.duration)
+                try compositionVideoTrack.insertTimeRange(range, of: segment.videoTrack, at: cursor)
+
+                if let sourceAudioTrack = segment.audioTrack,
+                   let compositionAudioTrack {
+                    try compositionAudioTrack.insertTimeRange(range, of: sourceAudioTrack, at: cursor)
+                }
+
+                let instruction = AVMutableVideoCompositionInstruction()
+                instruction.timeRange = CMTimeRange(start: cursor, duration: segment.duration)
+                let layerInstruction = AVMutableVideoCompositionLayerInstruction(assetTrack: compositionVideoTrack)
+                layerInstruction.setTransform(
+                    playbackTransform(for: segment.videoTrack, renderSize: renderSize),
+                    at: cursor
+                )
+                instruction.layerInstructions = [layerInstruction]
+                instructions.append(instruction)
+
+                cursor = CMTimeAdd(cursor, segment.duration)
+            }
+
+            if FileManager.default.fileExists(atPath: outputURL.path) {
+                try FileManager.default.removeItem(at: outputURL)
+            }
+            guard let exportSession = AVAssetExportSession(asset: composition, presetName: AVAssetExportPresetHighestQuality) else {
+                throw MediaPipelineError.exportSessionUnavailable
+            }
+            let exportBox = SendableMovieExportSession(exportSession)
+            exportBox.session.outputURL = outputURL
+            exportBox.session.outputFileType = .mov
+            exportBox.session.shouldOptimizeForNetworkUse = true
+            let videoComposition = AVMutableVideoComposition()
+            videoComposition.renderSize = renderSize
+            videoComposition.frameDuration = CMTime(value: 1, timescale: 30)
+            videoComposition.instructions = instructions
+            exportBox.session.videoComposition = videoComposition
+
+            return try await withCheckedThrowingContinuation { continuation in
+                exportBox.session.exportAsynchronously {
+                    switch exportBox.session.status {
+                    case .completed:
+                        do {
+                            try FileManager.default.setAttributes(
+                                [.protectionKey: FileProtectionType.complete],
+                                ofItemAtPath: outputURL.path
+                            )
+                            cleanupRecordingFiles(segments)
+                            continuation.resume(returning: outputURL)
+                        } catch {
+                            cleanupRecordingFiles(segments + [outputURL])
+                            continuation.resume(throwing: error)
+                        }
+                    case .cancelled:
+                        cleanupRecordingFiles(segments + [outputURL])
+                        continuation.resume(throwing: MediaPipelineError.exportCancelled)
+                    case .failed:
+                        cleanupRecordingFiles(segments + [outputURL])
+                        continuation.resume(throwing: exportBox.session.error ?? MediaPipelineError.exportFailed)
+                    default:
+                        cleanupRecordingFiles(segments + [outputURL])
+                        continuation.resume(throwing: MediaPipelineError.exportFailed)
                     }
-                    continuation.resume(returning: outputURL)
-                case .cancelled:
-                    continuation.resume(throwing: MediaPipelineError.exportCancelled)
-                case .failed:
-                    continuation.resume(throwing: exportBox.session.error ?? MediaPipelineError.exportFailed)
-                default:
-                    continuation.resume(throwing: MediaPipelineError.exportFailed)
                 }
             }
+        } catch {
+            cleanupRecordingFiles(segments + [outputURL])
+            throw error
+        }
+    }
+
+    private static func cleanupRecordingFiles(_ urls: [URL]) {
+        for url in urls where FileManager.default.fileExists(atPath: url.path) {
+            try? FileManager.default.removeItem(at: url)
         }
     }
 
@@ -906,6 +1027,20 @@ private final class InlineVideoRecorder: NSObject, ObservableObject, AVCaptureFi
             if !finished {
                 recordingError = error.localizedDescription
             }
+        }
+
+        if recordingError == nil {
+            do {
+                try FileManager.default.setAttributes(
+                    [.protectionKey: FileProtectionType.complete],
+                    ofItemAtPath: outputFileURL.path
+                )
+            } catch {
+                recordingError = error.localizedDescription
+            }
+        }
+        if recordingError != nil {
+            try? FileManager.default.removeItem(at: outputFileURL)
         }
 
         updateOnMain {

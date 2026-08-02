@@ -31,7 +31,7 @@
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
 	<key>NSCameraUsageDescription</key>
-	<string>Kithra uses the camera to record encrypted video messages.</string>
+	<string>Kithra uses the camera to record encrypted video messages and scan contact verification QR codes.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Kithra uses the microphone to include audio in encrypted video messages.</string>
 	<key>NSPhotoLibraryUsageDescription</key>

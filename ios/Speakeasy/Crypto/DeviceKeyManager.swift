@@ -35,6 +35,8 @@ protocol DeviceKeyManaging {
     ) async throws -> DevicePublicIdentity
     func removeIdentity() async throws
     func makeLoginChallengeResponse(challenge: Data) async throws -> Data
+    func signContactVerificationTranscript(_ transcript: Data) async throws -> Data
+    func signMessageAuthenticationTranscript(_ transcript: Data) async throws -> Data
     func encryptContentKey(_ contentKey: Data, recipientPublicKey: Data) async throws -> ContentKeyEnvelope
     func decryptContentKey(from envelope: ContentKeyEnvelope) async throws -> Data
 }
@@ -108,6 +110,7 @@ final class KeychainDeviceKeyManager: DeviceKeyManaging {
             createdAt: Date()
         )
 
+        try validate(record)
         try save(record)
         return record.publicIdentity
     }
@@ -123,11 +126,48 @@ final class KeychainDeviceKeyManager: DeviceKeyManaging {
         guard let record = try loadStoredRecord() else {
             throw DeviceKeyManagerError.identityNotFound
         }
+        var transcript = Data("KITHRA-LOGIN-CHALLENGE-v1\0".utf8)
+        transcript.append(challenge)
         guard let signature = sodium.sign.signature(
-            message: Array(challenge),
+            message: Array(transcript),
             secretKey: Array(record.signingPrivateKey)
         ) else {
             throw DeviceKeyManagerError.cryptoOperationFailed("Signing the relay auth challenge")
+        }
+
+        return Data(signature)
+    }
+
+    func signMessageAuthenticationTranscript(_ transcript: Data) async throws -> Data {
+        guard transcript.starts(with: MessageEnvelopeAuthenticator.domain) else {
+            throw DeviceKeyManagerError.cryptoOperationFailed("Domain-separating the message signature")
+        }
+        guard let record = try loadStoredRecord() else {
+            throw DeviceKeyManagerError.identityNotFound
+        }
+        guard let signature = sodium.sign.signature(
+            message: Array(transcript),
+            secretKey: Array(record.signingPrivateKey)
+        ) else {
+            throw DeviceKeyManagerError.cryptoOperationFailed("Authenticating the message envelope")
+        }
+
+        return Data(signature)
+    }
+
+    func signContactVerificationTranscript(_ transcript: Data) async throws -> Data {
+        let domain = Data("KITHRA/CONTACT-VERIFY-QR/V1\0".utf8)
+        guard transcript.starts(with: domain) else {
+            throw DeviceKeyManagerError.cryptoOperationFailed("Domain-separating contact verification")
+        }
+        guard let record = try loadStoredRecord() else {
+            throw DeviceKeyManagerError.identityNotFound
+        }
+        guard let signature = sodium.sign.signature(
+            message: Array(transcript),
+            secretKey: Array(record.signingPrivateKey)
+        ) else {
+            throw DeviceKeyManagerError.cryptoOperationFailed("Signing the contact verification code")
         }
 
         return Data(signature)
@@ -140,11 +180,17 @@ final class KeychainDeviceKeyManager: DeviceKeyManaging {
         ) else {
             throw DeviceKeyManagerError.cryptoOperationFailed("Wrapping the message content key")
         }
+        guard let recipientKeyDigest = sodium.genericHash.hash(
+            message: Array(recipientPublicKey),
+            outputLength: 32
+        ) else {
+            throw DeviceKeyManagerError.cryptoOperationFailed("Fingerprinting the content-key recipient")
+        }
 
         return ContentKeyEnvelope(
             algorithm: ContentKeyEnvelope.sealedBox,
             encryptedContentKey: Data(sealedContentKey),
-            recipientPublicKeyFingerprint: Data(recipientPublicKey.prefix(16)).base64EncodedString()
+            recipientPublicKeyFingerprint: Data(recipientKeyDigest).base64EncodedString()
         )
     }
 
@@ -187,13 +233,16 @@ final class KeychainDeviceKeyManager: DeviceKeyManaging {
         }
 
         do {
-            return try decoder.decode(StoredDeviceKeyRecord.self, from: data)
+            let record = try decoder.decode(StoredDeviceKeyRecord.self, from: data)
+            try validate(record)
+            return record
         } catch {
             throw DeviceKeyManagerError.corruptStoredIdentity
         }
     }
 
     private func save(_ record: StoredDeviceKeyRecord) throws {
+        try validate(record)
         let data = try encoder.encode(record)
         var query = baseQuery()
         query[kSecValueData as String] = data
@@ -217,6 +266,38 @@ final class KeychainDeviceKeyManager: DeviceKeyManaging {
         }
 
         throw DeviceKeyManagerError.keychain(status)
+    }
+
+    private func validate(_ record: StoredDeviceKeyRecord) throws {
+        guard record.encryptionPublicKey.count == 32,
+              record.encryptionPrivateKey.count == 32,
+              record.signingPublicKey.count == 32,
+              record.signingPrivateKey.count == 64 else {
+            throw DeviceKeyManagerError.corruptStoredIdentity
+        }
+
+        let probe = Array("KITHRA/DEVICE-KEY-PAIR-CHECK/V1\0".utf8)
+        guard let sealedProbe = sodium.box.seal(
+            message: probe,
+            recipientPublicKey: Array(record.encryptionPublicKey)
+        ),
+        let openedProbe = sodium.box.open(
+            anonymousCipherText: sealedProbe,
+            recipientPublicKey: Array(record.encryptionPublicKey),
+            recipientSecretKey: Array(record.encryptionPrivateKey)
+        ),
+        sodium.utils.equals(openedProbe, probe),
+        let signature = sodium.sign.signature(
+            message: probe,
+            secretKey: Array(record.signingPrivateKey)
+        ),
+        sodium.sign.verify(
+            message: probe,
+            publicKey: Array(record.signingPublicKey),
+            signature: signature
+        ) else {
+            throw DeviceKeyManagerError.corruptStoredIdentity
+        }
     }
 
     private func baseQuery() -> [String: Any] {

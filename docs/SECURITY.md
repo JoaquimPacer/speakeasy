@@ -22,7 +22,9 @@ All cryptography is provided by [libsodium](https://doc.libsodium.org/), a widel
 ### Identity Keys
 Each device generates long-term encryption and signing keypairs on first launch:
 - **Encryption private key** — stored in iOS Keychain / Android Keystore with the strongest available local protection. Never leaves the device.
-- **Signing private key** — stored in iOS Keychain / Android Keystore and used only to sign login challenges. Never leaves the device.
+- **Signing private key** — stored in iOS Keychain / Android Keystore and used
+  to sign login challenges, contact-verification QR payloads, and authenticated
+  message transcripts. Never leaves the device.
 - **Public keys** — registered with the server. These are the device identity material the relay can use for routing and challenge verification.
 
 ### Message Encryption Flow
@@ -32,29 +34,31 @@ Sender                          Server                         Recipient
   │                               │                               │
   │  1. Generate fresh content    │                               │
   │     key (K)                   │                               │
-  │                               │                               │
   │  2. Encrypt video with K      │                               │
   │     (XChaCha20-Poly1305)      │                               │
-  │                               │                               │
-  │  3. Encrypt K with            │                               │
-  │     recipient encryption key  │                               │
-  │     (crypto_box_seal)         │                               │
-  │                               │                               │
-  │  4. Upload encrypted video    │                               │
-  │     + encrypted K             │                               │
+  │  3. Seal K to the pinned      │                               │
+  │     recipient X25519 key      │                               │
+  │  4. Sign envelope transcript  │                               │
+  │     (Ed25519)                 │                               │
+  │  5. Upload ciphertext +       │                               │
+  │     signed envelope           │                               │
   │ ─────────────────────────────▶│                               │
-  │                               │  5. Store encrypted blob      │
+  │                               │  6. Store opaque bytes        │
   │                               │     + notify recipient        │
   │                               │ ─────────────────────────────▶│
-  │                               │                               │
-  │                               │                               │  6. Download encrypted
-  │                               │                               │     blob + encrypted K
-  │                               │                               │
-  │                               │                               │  7. Decrypt K with
-  │                               │                               │     private key
-  │                               │                               │
-  │                               │                               │  8. Decrypt video with K
+  │                               │                               │  7. Download
+  │                               │                               │  8. Verify pin,
+  │                               │                               │     signature, hash,
+  │                               │                               │     and replay ID
+  │                               │                               │  9. Open K and decrypt
 ```
+
+Identity Verification v1 authenticates the two long-term device keypairs by a
+60-digit safety number or signed, peer-specific QR code. The resulting local
+Keychain pin is fail-closed: an unverified or changed identity cannot be used for
+new sends or accepted as an authenticated sender. Message Envelope v2 then signs
+the complete canonical envelope transcript with the pinned sender Ed25519 key.
+See `docs/IDENTITY_VERIFICATION.md` and `docs/MESSAGE_ENVELOPE_V2.md`.
 
 ### Forward Secrecy
 V1 uses a fresh content key for each message, which limits the blast radius if a
@@ -79,9 +83,10 @@ The server is **untrusted by design**:
 |--------|-----------|
 | Network eavesdropping | TLS (transport) + E2E encryption (content) |
 | Server compromise | Encrypted blobs are useless without device keys |
-| Curious server operators | Zero-knowledge design — nothing to see |
+| Curious server operators | Cannot decrypt verified content; still see routing metadata and ciphertext |
 | Mass surveillance | No central service — each instance is independent |
-| MITM (key exchange) | V2 key verification via safety numbers / QR codes |
+| Relay key substitution | V1 out-of-band safety number / signed QR verification plus local key pinning |
+| Envelope forgery/tampering | V2 Ed25519 transcript signature after identity verification |
 
 ### Not Protected Against (v1)
 | Threat | Limitation |
@@ -91,6 +96,8 @@ The server is **untrusted by design**:
 | Recipient screenshots | No DRM, no screenshot prevention |
 | Targeted device exploits | Out of scope for application-level crypto |
 | Full forward secrecy | V2; V1 uses per-message content keys without ratcheting |
+| Relay metadata/availability attacks | Relay can observe routing, withhold, reorder, and replay unchanged signed envelopes |
+| Unverified human identity | A safety number authenticates device keys, not a person's legal identity |
 
 ## Security Reporting
 

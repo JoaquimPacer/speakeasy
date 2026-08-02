@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"database/sql"
@@ -10,9 +11,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/joaquimpacer/speakeasy/server/internal/storage"
 )
@@ -95,6 +99,43 @@ type registerRequest struct {
 	SigningPublicKey    []byte `json:"signingPublicKey"`
 }
 
+const (
+	x25519PublicKeySize            = 32
+	ed25519PublicKeySize           = 32
+	identityDigestSize             = 32
+	xChaCha20Poly1305NonceSize     = 24
+	ciphertextHashSize             = 32
+	sealedContentKeySize           = 80
+	ed25519SignatureSize           = 64
+	maxUsernameUTF8Bytes           = 128
+	maxUploadMetadataBytes         = 64 << 10
+	maxAuthenticatedEnvelopeBytes  = 48 << 10
+	maxEnvelopeMIMETypeUTF8Bytes   = 255
+	maxKeyFingerprintUTF8Bytes     = 256
+	maxThumbnailPathUTF8Bytes      = 2 << 10
+	authenticatedEnvelopeV2        = 2
+	xChaCha20Poly1305Algorithm     = "XChaCha20-Poly1305"
+	sealedContentKeyAlgorithm      = "crypto_box_seal"
+	ed25519AuthenticationAlgorithm = "Ed25519"
+	authenticatedCreatedAtLayout   = "2006-01-02T15:04:05Z"
+)
+
+func (r *registerRequest) UnmarshalJSON(data []byte) error {
+	if !utf8.Valid(data) {
+		return errors.New("registration JSON must be valid UTF-8")
+	}
+
+	type wireRegisterRequest registerRequest
+	var decoded wireRegisterRequest
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&decoded); err != nil {
+		return err
+	}
+	*r = registerRequest(decoded)
+	return nil
+}
+
 type contactResponse struct {
 	UserID              string `json:"userID"`
 	ContactID           string `json:"contactID"`
@@ -122,6 +163,43 @@ type uploadMetadata struct {
 	Envelope          json.RawMessage `json:"envelope"`
 	BlobSize          int64           `json:"blobSize"`
 	DurationMs        int64           `json:"durationMs"`
+}
+
+type authenticatedMessageEnvelope struct {
+	Version                 int                              `json:"version"`
+	ClientMessageID         string                           `json:"clientMessageID"`
+	SenderDeviceID          string                           `json:"senderDeviceID"`
+	RecipientDeviceID       string                           `json:"recipientDeviceID"`
+	SenderIdentityDigest    []byte                           `json:"senderIdentityDigest"`
+	RecipientIdentityDigest []byte                           `json:"recipientIdentityDigest"`
+	AuthenticationAlgorithm string                           `json:"authenticationAlgorithm"`
+	Signature               []byte                           `json:"signature"`
+	Media                   authenticatedEnvelopeMedia       `json:"media"`
+	ContentKey              authenticatedEnvelopeContentKey  `json:"contentKey"`
+	SenderContentKey        *authenticatedEnvelopeContentKey `json:"senderContentKey"`
+	CreatedAt               string                           `json:"createdAt"`
+}
+
+type authenticatedEnvelopeMedia struct {
+	Algorithm       string                          `json:"algorithm"`
+	Nonce           []byte                          `json:"nonce"`
+	CiphertextHash  []byte                          `json:"ciphertextHash"`
+	MIMEType        string                          `json:"mimeType"`
+	DurationSeconds *float64                        `json:"durationSeconds"`
+	Thumbnail       *authenticatedEnvelopeThumbnail `json:"thumbnail"`
+}
+
+type authenticatedEnvelopeThumbnail struct {
+	Algorithm         string `json:"algorithm"`
+	Nonce             []byte `json:"nonce"`
+	EncryptedBlobPath string `json:"encryptedBlobPath"`
+	CiphertextHash    []byte `json:"ciphertextHash"`
+}
+
+type authenticatedEnvelopeContentKey struct {
+	Algorithm                     string  `json:"algorithm"`
+	EncryptedContentKey           []byte  `json:"encryptedContentKey"`
+	RecipientPublicKeyFingerprint *string `json:"recipientPublicKeyFingerprint"`
 }
 
 type messageResponse struct {
@@ -220,8 +298,16 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 
 	req.Username = strings.TrimSpace(req.Username)
 	req.DeviceName = strings.TrimSpace(req.DeviceName)
-	if req.Username == "" || len(req.EncryptionPublicKey) == 0 || len(req.SigningPublicKey) == 0 {
-		http.Error(w, "username, encryptionPublicKey, and signingPublicKey are required", http.StatusBadRequest)
+	if err := validateUsername(req.Username); err != nil {
+		http.Error(w, "invalid username: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	if len(req.EncryptionPublicKey) == 0 || len(req.SigningPublicKey) == 0 {
+		http.Error(w, "encryptionPublicKey and signingPublicKey are required", http.StatusBadRequest)
+		return
+	}
+	if len(req.EncryptionPublicKey) != x25519PublicKeySize || len(req.SigningPublicKey) != ed25519PublicKeySize {
+		http.Error(w, "encryptionPublicKey and signingPublicKey must each decode to exactly 32 bytes", http.StatusBadRequest)
 		return
 	}
 
@@ -655,9 +741,23 @@ func (s *Server) uploadMessage(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "metadata part is required", http.StatusBadRequest)
 		return
 	}
+	if len(metadataPart) > maxUploadMetadataBytes {
+		http.Error(w, "metadata part is too large", http.StatusRequestEntityTooLarge)
+		return
+	}
+	if !utf8.ValidString(metadataPart) {
+		http.Error(w, "invalid metadata JSON", http.StatusBadRequest)
+		return
+	}
 
 	var metadata uploadMetadata
-	if err := json.Unmarshal([]byte(metadataPart), &metadata); err != nil {
+	metadataDecoder := json.NewDecoder(strings.NewReader(metadataPart))
+	metadataDecoder.DisallowUnknownFields()
+	if err := metadataDecoder.Decode(&metadata); err != nil {
+		http.Error(w, "invalid metadata JSON", http.StatusBadRequest)
+		return
+	}
+	if err := metadataDecoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
 		http.Error(w, "invalid metadata JSON", http.StatusBadRequest)
 		return
 	}
@@ -665,6 +765,10 @@ func (s *Server) uploadMessage(w http.ResponseWriter, r *http.Request) {
 	metadata.RecipientDeviceID = normalizeID(metadata.RecipientDeviceID)
 	if metadata.RecipientID == "" || metadata.RecipientDeviceID == "" || len(metadata.Envelope) == 0 {
 		http.Error(w, "recipientID, recipientDeviceID, and envelope are required", http.StatusBadRequest)
+		return
+	}
+	if err := validateAuthenticatedEnvelope(metadata.Envelope, principal.deviceID, metadata.RecipientDeviceID); err != nil {
+		http.Error(w, "invalid envelope: "+err.Error(), http.StatusBadRequest)
 		return
 	}
 	if metadata.RecipientID == principal.userID {
@@ -1237,6 +1341,175 @@ func methodNotAllowed(w http.ResponseWriter, methods ...string) {
 
 func normalizeID(value string) string {
 	return strings.ToLower(strings.TrimSpace(value))
+}
+
+func validateUsername(username string) error {
+	if username == "" {
+		return errors.New("must not be empty after trimming whitespace")
+	}
+	if !utf8.ValidString(username) {
+		return errors.New("must be valid UTF-8")
+	}
+	if len(username) > maxUsernameUTF8Bytes {
+		return fmt.Errorf("must be at most %d UTF-8 bytes", maxUsernameUTF8Bytes)
+	}
+	for _, r := range username {
+		if unicode.IsControl(r) {
+			return errors.New("must not contain Unicode control characters")
+		}
+	}
+	return nil
+}
+
+func validateAuthenticatedEnvelope(raw json.RawMessage, senderDeviceID string, recipientDeviceID string) error {
+	if len(raw) > maxAuthenticatedEnvelopeBytes {
+		return fmt.Errorf("envelope must be at most %d bytes", maxAuthenticatedEnvelopeBytes)
+	}
+	if !utf8.Valid(raw) {
+		return errors.New("envelope JSON must be valid UTF-8")
+	}
+
+	var envelope authenticatedMessageEnvelope
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&envelope); err != nil {
+		return fmt.Errorf("malformed JSON, base64 data, or field type: %w", err)
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		return errors.New("envelope must contain exactly one JSON value")
+	}
+	if envelope.Version != authenticatedEnvelopeV2 {
+		return fmt.Errorf("version must be %d", authenticatedEnvelopeV2)
+	}
+	if !isNonzeroUUID(envelope.ClientMessageID) {
+		return errors.New("clientMessageID must be a nonzero UUID")
+	}
+	if !strings.EqualFold(envelope.SenderDeviceID, senderDeviceID) {
+		return errors.New("senderDeviceID does not match authenticated device")
+	}
+	if !strings.EqualFold(envelope.RecipientDeviceID, recipientDeviceID) {
+		return errors.New("recipientDeviceID does not match upload metadata")
+	}
+	if len(envelope.SenderIdentityDigest) != identityDigestSize {
+		return fmt.Errorf("senderIdentityDigest must decode to exactly %d bytes", identityDigestSize)
+	}
+	if len(envelope.RecipientIdentityDigest) != identityDigestSize {
+		return fmt.Errorf("recipientIdentityDigest must decode to exactly %d bytes", identityDigestSize)
+	}
+	if envelope.AuthenticationAlgorithm != ed25519AuthenticationAlgorithm {
+		return fmt.Errorf("authenticationAlgorithm must be %s", ed25519AuthenticationAlgorithm)
+	}
+	if len(envelope.Signature) != ed25519SignatureSize {
+		return fmt.Errorf("signature must decode to exactly %d bytes", ed25519SignatureSize)
+	}
+	if envelope.Media.Algorithm != xChaCha20Poly1305Algorithm {
+		return fmt.Errorf("media.algorithm must be %s", xChaCha20Poly1305Algorithm)
+	}
+	if len(envelope.Media.Nonce) != xChaCha20Poly1305NonceSize {
+		return fmt.Errorf("media.nonce must decode to exactly %d bytes", xChaCha20Poly1305NonceSize)
+	}
+	if len(envelope.Media.CiphertextHash) != ciphertextHashSize {
+		return fmt.Errorf("media.ciphertextHash must decode to exactly %d bytes", ciphertextHashSize)
+	}
+	if err := validateEnvelopeString(
+		envelope.Media.MIMEType,
+		"media.mimeType",
+		maxEnvelopeMIMETypeUTF8Bytes,
+	); err != nil {
+		return err
+	}
+	if envelope.Media.DurationSeconds != nil {
+		seconds := *envelope.Media.DurationSeconds
+		milliseconds := math.Floor(seconds*1_000 + 0.5)
+		if math.IsNaN(seconds) || math.IsInf(seconds, 0) || seconds < 0 ||
+			math.IsNaN(milliseconds) || math.IsInf(milliseconds, 0) ||
+			milliseconds >= 18446744073709551616.0 {
+			return errors.New("media.durationSeconds must be finite, nonnegative, and representable as unsigned milliseconds")
+		}
+	}
+	if err := validateAuthenticatedContentKey(envelope.ContentKey, "contentKey"); err != nil {
+		return err
+	}
+	if envelope.SenderContentKey != nil {
+		if err := validateAuthenticatedContentKey(*envelope.SenderContentKey, "senderContentKey"); err != nil {
+			return err
+		}
+	}
+	if envelope.Media.Thumbnail != nil {
+		thumbnail := envelope.Media.Thumbnail
+		if thumbnail.Algorithm != xChaCha20Poly1305Algorithm {
+			return fmt.Errorf("media.thumbnail.algorithm must be %s", xChaCha20Poly1305Algorithm)
+		}
+		if len(thumbnail.Nonce) != xChaCha20Poly1305NonceSize {
+			return fmt.Errorf("media.thumbnail.nonce must decode to exactly %d bytes", xChaCha20Poly1305NonceSize)
+		}
+		if err := validateEnvelopeString(
+			thumbnail.EncryptedBlobPath,
+			"media.thumbnail.encryptedBlobPath",
+			maxThumbnailPathUTF8Bytes,
+		); err != nil {
+			return err
+		}
+		if len(thumbnail.CiphertextHash) != ciphertextHashSize {
+			return fmt.Errorf("media.thumbnail.ciphertextHash must decode to exactly %d bytes", ciphertextHashSize)
+		}
+	}
+	createdAt, err := time.Parse(authenticatedCreatedAtLayout, envelope.CreatedAt)
+	if err != nil || createdAt.Format(authenticatedCreatedAtLayout) != envelope.CreatedAt {
+		return errors.New("createdAt must use UTC ISO 8601 whole-second format (YYYY-MM-DDTHH:MM:SSZ)")
+	}
+	return nil
+}
+
+func validateAuthenticatedContentKey(key authenticatedEnvelopeContentKey, field string) error {
+	if key.Algorithm != sealedContentKeyAlgorithm {
+		return fmt.Errorf("%s.algorithm must be %s", field, sealedContentKeyAlgorithm)
+	}
+	if len(key.EncryptedContentKey) != sealedContentKeySize {
+		return fmt.Errorf("%s.encryptedContentKey must decode to exactly %d bytes", field, sealedContentKeySize)
+	}
+	if key.RecipientPublicKeyFingerprint != nil {
+		if err := validateEnvelopeString(
+			*key.RecipientPublicKeyFingerprint,
+			field+".recipientPublicKeyFingerprint",
+			maxKeyFingerprintUTF8Bytes,
+		); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateEnvelopeString(value string, field string, maxUTF8Bytes int) error {
+	if value == "" {
+		return fmt.Errorf("%s must be non-empty", field)
+	}
+	if len(value) > maxUTF8Bytes {
+		return fmt.Errorf("%s must be at most %d UTF-8 bytes", field, maxUTF8Bytes)
+	}
+	for _, r := range value {
+		if unicode.IsControl(r) {
+			return fmt.Errorf("%s must not contain Unicode control characters", field)
+		}
+	}
+	return nil
+}
+
+func isNonzeroUUID(value string) bool {
+	if len(value) != 36 || value[8] != '-' || value[13] != '-' || value[18] != '-' || value[23] != '-' {
+		return false
+	}
+
+	decoded, err := hex.DecodeString(strings.ReplaceAll(value, "-", ""))
+	if err != nil || len(decoded) != 16 {
+		return false
+	}
+	for _, b := range decoded {
+		if b != 0 {
+			return true
+		}
+	}
+	return false
 }
 
 func mustID() string {

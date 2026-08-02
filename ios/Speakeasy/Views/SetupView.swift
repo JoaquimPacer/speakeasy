@@ -28,6 +28,18 @@ struct SetupView: View {
                     LabeledContent("Device", value: identity.deviceID?.uuidString ?? "Ready")
                     LabeledContent("Encryption key", value: "\(identity.encryptionPublicKey.count) bytes")
                     LabeledContent("Signing key", value: "\(identity.signingPublicKey.count) bytes")
+                    if identity.deviceID != nil {
+                        Text("This identity is already bound to a relay account. Reset it before creating a replacement registration.")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                        Button("Reset local identity", role: .destructive) {
+                            Task {
+                                await appState.resetLocalRegistration()
+                                await appState.prepareLocalIdentity()
+                            }
+                        }
+                        .disabled(appState.isWorking)
+                    }
                 } else {
                     Button {
                         Task {
@@ -51,7 +63,7 @@ struct SetupView: View {
                 } label: {
                     Label("Register", systemImage: "person.badge.plus")
                 }
-                .disabled(appState.isWorking)
+                .disabled(appState.isWorking || appState.deviceIdentity?.deviceID != nil)
             }
 
             if let error = appState.lastErrorMessage {

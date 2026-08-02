@@ -17,7 +17,11 @@ attachments.
   challenge-response before public beta.
 - Each device has separate public keys:
   - `encryptionPublicKey` for message content-key wrapping.
-  - `signingPublicKey` for authentication challenge verification.
+  - `signingPublicKey` for authentication challenges, signed contact-verification
+    QR payloads, and authenticated message envelopes.
+- Public-release clients use one active device per user in Identity Verification
+  v1. Contact keys must be verified and pinned locally before messaging; the
+  relay is not a trust authority for key changes.
 
 ## Auth
 
@@ -99,6 +103,11 @@ Response:
 
 Returns contacts and their current public device keys.
 
+The returned keys are untrusted candidates. Clients compare them with the local
+Keychain pin and enter `keyChanged` instead of silently replacing a verified
+identity. QR/safety-number verification is client-to-client and requires no
+relay endpoint. See `docs/IDENTITY_VERIFICATION.md`.
+
 ## Messages
 
 ### `POST /messages`
@@ -111,19 +120,51 @@ Metadata:
 
 ```json
 {
-  "recipientId": "usr_...",
-  "recipientDeviceId": "dev_...",
-  "envelopeVersion": 1,
+  "recipientID": "usr_...",
+  "recipientDeviceID": "dev_...",
   "envelope": {
-    "algorithm": "xchacha20poly1305",
-    "encryptedContentKey": "base64-key-wrap",
-    "nonce": "base64-nonce",
-    "thumbnailEnvelope": null
+    "version": 2,
+    "senderDeviceID": "uuid",
+    "recipientDeviceID": "uuid",
+    "media": {
+      "algorithm": "XChaCha20-Poly1305",
+      "nonce": "base64-24-byte-nonce",
+      "ciphertextHash": "base64-32-byte-blake2b-hash",
+      "mimeType": "video/mp4",
+      "durationSeconds": 42.125,
+      "thumbnail": null
+    },
+    "contentKey": {
+      "algorithm": "crypto_box_seal",
+      "encryptedContentKey": "base64-sealed-content-key",
+      "recipientPublicKeyFingerprint": null
+    },
+    "senderContentKey": null,
+    "createdAt": "2026-08-02T17:18:32Z",
+    "clientMessageID": "uuid",
+    "senderIdentityDigest": "base64-32-byte-identity-digest",
+    "recipientIdentityDigest": "base64-32-byte-identity-digest",
+    "authenticationAlgorithm": "Ed25519",
+    "signature": "base64-64-byte-signature"
   },
   "blobSize": 123456,
   "durationMs": 42000
 }
 ```
+
+The bearer session supplies the sender user ID and upload metadata supplies the
+recipient user ID to the signed canonical transcript. New clients upload version
+2 only. The relay validates the v2 shape, literal algorithms, and fixed lengths
+before writing a blob, then stores it opaquely; it does not verify the signature,
+create, rewrite, or downgrade the envelope. Exact signing bytes and the strict
+v1 cutoff/deployment order are in
+`docs/MESSAGE_ENVELOPE_V2.md`.
+
+The metadata JSON is capped at 64 KiB and its nested envelope at 48 KiB.
+Unknown envelope/metadata fields and values the Swift client cannot decode are
+rejected. Version 2 uses exact UTC whole-second `createdAt`; bounded nonempty
+MIME/fingerprint/thumbnail-path strings; finite nonnegative duration; and the
+fixed binary sizes documented in the protocol.
 
 Response:
 
@@ -143,6 +184,10 @@ Lists metadata for messages sent by or addressed to the authenticated user.
 
 Returns encrypted blob bytes plus envelope metadata for an authorized sender or
 recipient.
+
+Before decrypting a new version-2 message, the recipient verifies its pinned
+identities, signed transcript, ciphertext hash, and replay key. An unsigned
+version-1 envelope must never be represented as authenticated.
 
 ### `POST /messages/{messageId}/delivered`
 

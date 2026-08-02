@@ -24,7 +24,9 @@ existing constraints.
 - V1 client: native Swift/SwiftUI, AVFoundation, Keychain, libsodium.
 - V1 server: Go relay, SQLite, local filesystem blob storage, Docker Compose.
 - V1 scope: 1:1 video messaging, invite-code contacts, delivery/watch status,
-  optional Face ID/passcode gate, metadata-only block/report controls.
+  optional Face ID/passcode gate, metadata-only block/report controls,
+  relay-scoped safety-number/signed-QR verification, and authenticated Message
+  Envelope v2.
 - Out of V1: Android, groups, monetization, web client, key backup/recovery,
   full Signal-style forward secrecy.
 - Android is a V2 client; keep API and crypto envelope platform-neutral.
@@ -43,9 +45,17 @@ existing constraints.
 - Server deletion: delete encrypted blob after recipient download is verified
   into local cache. Watched status does not control blob deletion.
 - Local media: keep sent and received history on-device as encrypted packages;
-  use short-lived plaintext temp files only for playback.
+  use short-lived plaintext temp files for playback and local-only thumbnail
+  caches. V1 does not upload thumbnails to the relay.
 - Device identity: separate encryption keypair for content-key wrapping and
   signing keypair for auth challenges.
+- V1 device trust: one active device per user. Users verify a 60-digit safety
+  number or signed peer-specific QR out of band; clients pin both identities in
+  Keychain and fail closed on changes.
+- New messages use signed Message Envelope v2. The first public client uses a
+  strict cutoff and will not play unsigned incoming envelope-v1 history. Roll
+  out the v2-capable client before or together with the relay's v1 rejection so
+  older TestFlight clients are not broken by a server-first deployment.
 
 ## Architecture Summary
 
@@ -77,18 +87,22 @@ Message send lifecycle:
 2. Transcode to a compressed delivery video.
 3. Generate a fresh random content key.
 4. Encrypt the compressed video locally with libsodium.
-5. Encrypt the content key to the recipient device public key.
-6. Save an encrypted local sender copy for history/resend.
-7. Upload encrypted blob and envelope metadata to the relay.
-8. Delete raw camera and plaintext compressed temporary files after encryption
+5. Confirm the recipient identity matches the local out-of-band verification
+   pin and encrypt the content key to that pinned device public key.
+6. Sign the canonical Message Envelope v2 transcript with the sender device key.
+7. Save an encrypted local sender copy for history/resend.
+8. Upload encrypted blob and opaque signed envelope metadata to the relay.
+9. Delete raw camera and plaintext compressed temporary files after encryption
    and local encrypted save succeed.
 
 Message receive lifecycle:
 1. Download encrypted blob and envelope metadata.
-2. Decrypt and verify locally.
-3. Save verified encrypted local recipient copy.
-4. Acknowledge delivery to the relay.
-5. Relay deletes its encrypted blob.
+2. Confirm both identities match the local pin and verify the envelope signature,
+   ciphertext hash, and replay key.
+3. Decrypt and verify locally.
+4. Save verified encrypted local recipient copy.
+5. Acknowledge delivery to the relay.
+6. Relay deletes its encrypted blob.
 
 Playback lifecycle:
 1. User opens a sent or received video.

@@ -7,6 +7,8 @@ struct RecordingPlaceholderView: View {
     @State private var selectedQuality: DeliveryVideoQuality = .compact480p
     @State private var selectedContactID: UUID?
     @State private var rawVideoURL: URL?
+    @State private var activeSendURL: URL?
+    @State private var hasDisappeared = false
     @State private var showingVideoRecorder = false
     @State private var didAutoLaunchRecorder = false
 
@@ -42,6 +44,51 @@ struct RecordingPlaceholderView: View {
                 .frame(maxWidth: 360)
             }
 
+            if let selectedContact, selectedContactTrustState != .verified {
+                NavigationLink {
+                    ContactSecurityView(contact: selectedContact)
+                } label: {
+                    HStack(spacing: 10) {
+                        Image(systemName: selectedContactTrustState == .keyChanged
+                              ? "exclamationmark.shield.fill"
+                              : "shield")
+                            .accessibilityHidden(true)
+
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(selectedContactTrustState == .keyChanged
+                                 ? "Safety number changed"
+                                 : "Verify before recording")
+                                .font(.subheadline.weight(.semibold))
+                            Text("Compare the safety number or scan both QR codes.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+
+                        Spacer()
+                        Image(systemName: "chevron.right")
+                            .font(.caption.weight(.semibold))
+                            .accessibilityHidden(true)
+                    }
+                    .padding(12)
+                    .background(
+                        selectedContactTrustState == .keyChanged
+                            ? Color.red.opacity(0.1)
+                            : Color.orange.opacity(0.1),
+                        in: RoundedRectangle(cornerRadius: 8)
+                    )
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 8)
+                            .stroke(
+                                selectedContactTrustState == .keyChanged ? Color.red : Color.orange,
+                                lineWidth: selectedContactTrustState == .keyChanged ? 2 : 1
+                            )
+                    }
+                }
+                .buttonStyle(.plain)
+                .frame(maxWidth: 360)
+                .accessibilityHint("Opens contact security")
+            }
+
             Picker("Quality", selection: $selectedQuality) {
                 ForEach(DeliveryVideoQuality.allCases) { quality in
                     Text(quality.displayName).tag(quality)
@@ -69,7 +116,12 @@ struct RecordingPlaceholderView: View {
                         .foregroundStyle(.red)
                 }
                 .accessibilityLabel("Record video")
-                .disabled(selectedContact == nil || appState.isWorking)
+                .accessibilityHint(recordingDisabledHint)
+                .disabled(
+                    selectedContact == nil ||
+                        selectedContactTrustState != .verified ||
+                        appState.isWorking
+                )
 
                 Button {
                     send(rawVideoURL)
@@ -80,7 +132,13 @@ struct RecordingPlaceholderView: View {
                 }
                 .buttonStyle(.bordered)
                 .accessibilityLabel("Send video")
-                .disabled(rawVideoURL == nil || selectedContact == nil || appState.isWorking)
+                .accessibilityHint(recordingDisabledHint)
+                .disabled(
+                    rawVideoURL == nil ||
+                        selectedContact == nil ||
+                        selectedContactTrustState != .verified ||
+                        appState.isWorking
+                )
             }
 
             if let error = appState.lastErrorMessage {
@@ -104,9 +162,18 @@ struct RecordingPlaceholderView: View {
                     .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
             }
         }
-        .fullScreenCover(isPresented: $showingVideoRecorder) {
+        .fullScreenCover(isPresented: $showingVideoRecorder, onDismiss: {
+            hasDisappeared = false
+        }) {
             VideoRecorderView(
                 onFinish: { url in
+                    if let previousURL = rawVideoURL,
+                       previousURL != url,
+                       previousURL != activeSendURL {
+                        Task {
+                            await appState.mediaPipeline.cleanupTemporaryFiles([previousURL])
+                        }
+                    }
                     rawVideoURL = url
                     showingVideoRecorder = false
                     if autoSendAfterCapture {
@@ -120,8 +187,20 @@ struct RecordingPlaceholderView: View {
             .ignoresSafeArea()
         }
         .onAppear {
+            hasDisappeared = false
             selectedContactID = contact?.contactID ?? selectedContactID ?? appState.contacts.first?.contactID
             autoLaunchIfNeeded()
+        }
+        .onDisappear {
+            hasDisappeared = true
+            guard let retainedURL = rawVideoURL,
+                  retainedURL != activeSendURL else {
+                return
+            }
+            rawVideoURL = nil
+            Task {
+                await appState.mediaPipeline.cleanupTemporaryFiles([retainedURL])
+            }
         }
         .toolbar {
             ToolbarItem(placement: .cancellationAction) {
@@ -133,7 +212,10 @@ struct RecordingPlaceholderView: View {
     }
 
     private func autoLaunchIfNeeded() {
-        guard autoLaunchRecorder, !didAutoLaunchRecorder, selectedContact != nil else {
+        guard autoLaunchRecorder,
+              !didAutoLaunchRecorder,
+              selectedContact != nil,
+              selectedContactTrustState == .verified else {
             return
         }
 
@@ -148,13 +230,22 @@ struct RecordingPlaceholderView: View {
             return
         }
 
+        activeSendURL = videoURL
         Task {
             await appState.sendVideo(
                 rawVideoURL: videoURL,
                 quality: selectedQuality,
                 to: selectedContact
             )
-            if appState.lastErrorMessage == nil {
+            let succeeded = appState.lastErrorMessage == nil
+            activeSendURL = nil
+            if succeeded || hasDisappeared {
+                await appState.mediaPipeline.cleanupTemporaryFiles([videoURL])
+                if rawVideoURL == videoURL {
+                    rawVideoURL = nil
+                }
+            }
+            if succeeded {
                 dismiss()
             }
         }
@@ -162,12 +253,30 @@ struct RecordingPlaceholderView: View {
 
     private var selectedContact: Contact? {
         if let contact {
-            return contact
+            return appState.contacts.first { $0.contactID == contact.contactID } ?? contact
         }
         guard let selectedContactID else {
             return appState.contacts.first
         }
         return appState.contacts.first { $0.contactID == selectedContactID }
+    }
+
+    private var selectedContactTrustState: ContactTrustState {
+        guard let selectedContact else {
+            return .unverified
+        }
+        return appState.trustState(for: selectedContact)
+    }
+
+    private var recordingDisabledHint: String {
+        switch selectedContactTrustState {
+        case .verified:
+            return ""
+        case .unverified:
+            return "Verify this contact before recording or sending"
+        case .keyChanged:
+            return "Verify the changed safety number before recording or sending"
+        }
     }
 }
 
@@ -226,7 +335,18 @@ private struct VideoRecorderView: UIViewControllerRepresentable {
                 return
             }
 
-            onFinish(url)
+            do {
+                try FileManager.default.setAttributes(
+                    [.protectionKey: FileProtectionType.complete],
+                    ofItemAtPath: url.path
+                )
+                onFinish(url)
+            } catch {
+                // The picker returns a temporary movie URL. If it cannot be
+                // protected, discard it rather than retaining plaintext media.
+                try? FileManager.default.removeItem(at: url)
+                onCancel()
+            }
         }
 
         func imagePickerControllerDidCancel(_ picker: UIImagePickerController) {

@@ -8,9 +8,9 @@ import (
 )
 
 const (
-	defaultAddress                 = ":8080"
-	defaultDBPath                  = "data/speakeasy.db"
-	defaultBlobStoragePath         = "data/blobs"
+	defaultAddress                  = ":8080"
+	defaultDBPath                   = "data/speakeasy.db"
+	defaultBlobStoragePath          = "data/blobs"
 	defaultUndeliveredRetentionDays = 7
 )
 
