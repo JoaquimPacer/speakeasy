@@ -70,11 +70,15 @@ with prekeys/ratcheting is a V2 goal.
 ## Server Trust Model
 
 The server is **untrusted by design**:
-- It stores only ciphertext
+- It stores encrypted media blobs plus the operational and authentication
+  metadata disclosed in the privacy policy, including usernames, public keys,
+  session tokens, contacts, routing/status data, blocks, and reports
 - It does not possess any private keys
-- It cannot decrypt any content
-- A full database dump yields only encrypted blobs and public keys
-- Server operators cannot access message content even if compelled
+- It cannot decrypt video content
+- A full database and blob-store dump exposes ciphertext and that metadata, but
+  not plaintext video or device private keys
+- Server operators cannot access plaintext message content, though they can
+  access operational metadata and disrupt availability
 
 ## Threat Model
 
@@ -82,9 +86,9 @@ The server is **untrusted by design**:
 | Threat | Protection |
 |--------|-----------|
 | Network eavesdropping | TLS (transport) + E2E encryption (content) |
-| Server compromise | Encrypted blobs are useless without device keys |
+| Server compromise | Does not reveal plaintext video without device keys; does reveal relay metadata and bearer sessions |
 | Curious server operators | Cannot decrypt verified content; still see routing metadata and ciphertext |
-| Mass surveillance | No central service — each instance is independent |
+| Hosted-service compromise | Self-hosted instances are independent, but the default hosted relay remains a central metadata and availability dependency for its users |
 | Relay key substitution | V1 out-of-band safety number / signed QR verification plus local key pinning |
 | Envelope forgery/tampering | V2 Ed25519 transcript signature after identity verification |
 

@@ -35,17 +35,17 @@ speakeasy/
       api/             REST handlers
       db/              SQLite access and migrations
       storage/         Local encrypted blob storage
-      push/            APNs push notification service
+      # push/APNs is a planned follow-up; no push package exists yet
     Dockerfile
     go.mod
-  ios/                 Native Swift iOS app
+  ios/                 Native Swift iPhone app (V1)
     Speakeasy/
       API/             Server communication
       Crypto/          libsodium envelope and local encryption
       Media/           Recording, compression, playback temp files
       Store/           Local state and encrypted media cache
       Views/           SwiftUI screens
-    Speakeasy.xcodeproj
+    Kithra.xcodeproj
   docker-compose.yml
   docs/
     BUILD_PLAN.md
@@ -57,13 +57,17 @@ speakeasy/
 
 ## Server Responsibilities
 
-- Authenticate devices without passwords using challenge-response.
+- Register devices and issue the current bearer sessions. Expiring
+  challenge-response login is required before public release but is not yet
+  implemented.
 - Store public device keys and never store private keys.
 - Create and accept contact invites.
-- Store encrypted blobs only until verified recipient cache or expiry.
+- Store encrypted blobs until verified recipient cache; each blob also records
+  an expiry, but automatic expiry cleanup is a public-release blocker and is not
+  yet enforced.
 - Track metadata-only delivery and watched status.
 - Support block/report metadata without receiving plaintext content.
-- Provide content-blind push notifications when APNs is configured.
+- Support foreground polling today; content-blind APNs is a post-V1 follow-up.
 
 ## iOS Responsibilities
 

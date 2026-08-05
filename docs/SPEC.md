@@ -1,5 +1,8 @@
 # Speakeasy — Technical Specification
 
+This document describes the target architecture. `docs/API.md` and working code
+are the source of truth for currently implemented endpoints and behavior.
+
 ## Vision
 
 An open-source, self-hosted, E2E encrypted async video messaging app. The private alternative to Marco Polo.
@@ -14,15 +17,16 @@ An open-source, self-hosted, E2E encrypted async video messaging app. The privat
 - Lightweight relay — stores encrypted blobs, routes notifications
 - Never has access to decryption keys
 - Can run on a $5/mo VPS, a Raspberry Pi, anything
-- REST API + WebSocket for real-time notifications
-- Storage: local disk or S3-compatible
+- REST API is implemented; WebSocket notifications are planned
+- Storage: local disk in V1; S3-compatible storage is a later option
 
-### Client (native mobile app — Swift for iOS, Kotlin for Android)
+### Client (native mobile app — Swift for iPhone V1, Kotlin for Android later)
+- V1 ships for iPhone only. iPad and Android clients are deferred.
 - Records video via native camera APIs (AVFoundation / CameraX)
 - Encrypts locally before upload
 - Decrypts on download
 - Key management (generate, exchange, store in Keychain / Keystore)
-- Push notifications via server
+- Push notifications via server are a post-V1 follow-up
 
 ### Why Native (Not React Native)
 - **Camera access:** Direct AVFoundation/CameraX gives better quality, lower latency, finer control over recording
@@ -86,8 +90,9 @@ An open-source, self-hosted, E2E encrypted async video messaging app. The privat
 
 ### Auth
 - `POST /auth/register` — create account (username + device public key)
-- `POST /auth/login` — authenticate (challenge-response with device key)
-- `POST /auth/device` — register additional device
+- `POST /auth/login` — planned pre-release challenge-response authentication
+- `POST /auth/device` — planned later multi-device registration; V1 permits one
+  active device per user
 
 ### Messages
 - `POST /messages` — upload encrypted video blob and envelope metadata
@@ -103,7 +108,8 @@ An open-source, self-hosted, E2E encrypted async video messaging app. The privat
 - `GET /contacts` — list contacts with public keys
 
 ### WebSocket
-- `ws://server/ws` — real-time notifications (new message, status updates)
+- Planned: `ws://server/ws` for real-time notifications. The current iPhone
+  client polls while open.
 
 ---
 
@@ -169,7 +175,8 @@ created_at: timestamp
 3. Encrypt content key to recipient's device encryption public key
 4. Save encrypted local sender copy for history and resend
 5. Upload encrypted blob to server
-6. Server stores blob, notifies recipient via WebSocket + push
+6. Server stores the blob; the current recipient discovers it by foreground
+   polling. WebSocket and push notifications are follow-ups.
 
 ### Download & Playback
 1. Receive notification
@@ -196,7 +203,7 @@ created_at: timestamp
 - Store durable local history encrypted at rest; do not keep raw camera captures
 
 ### Push notifications
-- APNs (iOS) + FCM (Android) for V1
+- APNs (iPhone) and FCM (Android) are post-V1 follow-ups
 - Content-blind push ("You have a new message" — no preview)
 - Future: UnifiedPush for fully self-hosted push
 
@@ -217,7 +224,10 @@ created_at: timestamp
 - **Key verification:** V1 uses relay-scoped safety numbers and signed,
   peer-specific QR codes. It pins one active device per user and requires fresh
   verification after identity changes.
-- **Server compromise:** Attacker gets encrypted blobs only. Useless without device keys.
+- **Server compromise:** An attacker gets encrypted blobs plus relay-held
+  account, session, contact, routing, status, block, and report metadata. The
+  blobs do not reveal plaintext video without device keys, but the metadata and
+  bearer sessions remain sensitive.
 - **Device compromise:** Standard mobile security applies. Keys are protected by Keychain / Keystore and optional local biometric access control.
 - **Forward secrecy:** V1 uses fresh content keys per message but does not claim full Signal-style forward secrecy. True forward secrecy with prekeys/ratcheting is V2.
 
@@ -230,12 +240,16 @@ created_at: timestamp
 The same way you trust Signal — layers of verifiability:
 
 1. **Open source** — all code is public. Encryption happens client-side, anyone can audit it.
-2. **Reproducible builds** — deterministic builds let users verify the App Store binary matches the public source code.
+2. **Reproducible-build goal** — deterministic verification of the App Store
+   binary against public source is desirable but is not established for V1.
 3. **No relay trust for verified content** — after both users verify their
    device identities, a compromised relay cannot decrypt content, substitute
    keys unnoticed, or forge authenticated envelopes. It still sees routing and
    timing metadata and can withhold, reorder, or replay ciphertext.
-4. **Minimal permissions** — camera + network only. No contacts, no location, no analytics SDKs, no tracking.
+4. **Minimal permissions** — camera and microphone for recording, photo-library
+   access for user-selected fallback video, local-network access for self-hosted
+   relays, and network access. No Contacts or location permission; no analytics
+   SDKs or tracking.
 5. **Key verification (V1)** — safety numbers and signed QR codes let users
    authenticate the exact device keys over an independent channel.
 

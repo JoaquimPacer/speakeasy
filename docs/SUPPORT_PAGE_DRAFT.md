@@ -22,7 +22,8 @@ clears local encrypted media and device keys from that device.
 
 ## Current Capabilities
 
-- Kithra currently supports iOS 1:1 video messaging.
+- Kithra V1 supports 1:1 video messaging on iPhone. iPad support is planned for
+  a later release.
 - Push notifications are not enabled yet, so the app refreshes while open.
 - The relay service must be online for sending and receiving.
 

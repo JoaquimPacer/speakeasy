@@ -1,7 +1,7 @@
 # DigitalOcean Beta Relay
 
-Target hostname: `https://api.joaquimpacer.com`
-Public app/support site: `https://kithra.joaquimpacer.com`
+Relay hostname: `https://api.joaquimpacer.com`
+Target app/support hostname: `https://kithra.joaquimpacer.com`
 
 Current beta status:
 
@@ -9,9 +9,13 @@ Current beta status:
 - Public IPv4: `137.184.80.178`
 - Relay path: `/srv/speakeasy/current`
 - Persistent data path: `/srv/speakeasy/data`
-- Public health check: `https://api.joaquimpacer.com/healthz`
-- Public site: `https://kithra.joaquimpacer.com`
-- TLS: Let's Encrypt through Certbot/Apache, auto-renewal scheduled by Certbot.
+- Public health check: `https://api.joaquimpacer.com/healthz`; last verified
+  healthy on 2026-08-04. The deployed process predates the integrated release
+  branch and must not be treated as the release candidate.
+- Public site: pending. As of 2026-08-04, `kithra.joaquimpacer.com` has no
+  public A, AAAA, or CNAME answer.
+- TLS: valid for the API hostname on 2026-08-04. Support-site TLS remains
+  pending until DNS and the virtual host are restored and verified.
 
 This deployment keeps the Go relay bound to localhost on the VPS and puts the
 existing web server in front of it for HTTPS. It is designed to coexist with the existing
@@ -19,7 +23,8 @@ existing web server in front of it for HTTPS. It is designed to coexist with the
 
 ## DNS
 
-Create an `A` record in Network Solutions:
+Create or verify an `A` record with the authoritative DNS provider (currently
+Cloudflare):
 
 - Host/name: `api`
 - Type: `A`

@@ -1,5 +1,8 @@
 # Kithra pre-launch credibility plan
 
+> Unpublished internal checklist. Re-check community rules and Kithra's release
+> status before acting on it.
+
 A one-to-two-week checklist for building a real Reddit and Hacker News presence before the launch post goes up. The point is simple: when Kithra launches, the account posting it should look like a person who has been part of these communities, not a spam bot that showed up to sell something.
 
 This plan is the "credibility first" half of the [LAUNCH-PLAYBOOK](LAUNCH-PLAYBOOK.md). Do it before you touch the drafts in [posts/](posts/).
@@ -33,7 +36,7 @@ Hacker News:
 r/selfhosted's rule is that promoted apps must be production ready and have docs. Treat that as the gate for the whole launch.
 
 - Repo is public at `[OPEN-SOURCE REPO LINK]`, MIT license visible, README clean and honest.
-- The self-host path works from a clean machine. Actually test `docker-compose up` on a fresh box or VM, not just your dev laptop. Write down the exact steps a stranger follows.
+- The relay self-host path works from a clean machine. Actually test `docker compose up` on a fresh box or VM, not just your dev laptop. Write down the exact steps a stranger follows, and be explicit that this installs the relay rather than the iPhone client.
 - Docs cover: what it is, how to run the relay, how the encryption works at a high level, and the honest metadata limit (the server sees who, when, and blob size, never content). Saying that out loud is what separates a privacy product from a privacy promise, and it is what the r/privacy and HN crowds will check for first.
 - A short demo is recorded: 30 to 60 seconds of recording a message, sending it, and opening it on the other phone. Screen recording is fine. This is your "show me, do not tell me."
 - Screenshots ready for the App Store listing and for the Reddit posts.
@@ -41,13 +44,13 @@ r/selfhosted's rule is that promoted apps must be production ready and have docs
 ## Start the slow processes early (Day 1)
 
 - Begin Privacy Guides identity verification at https://discuss.privacyguides.net/ if you want a Project Showcase post. It is a human process and will not clear overnight.
-- If you plan a TestFlight fallback in case App Store review slips, set that up now so it exists before Day 0.
+- Use internal TestFlight only to smoke-test the exact release candidate. It is not a public fallback for the App Store launch.
 
 ## The week before launch (Days 12 to 14)
 
 - Re-read the current sidebar rules of every subreddit you plan to post in. They change, and I could not fetch Reddit's live rule pages to confirm r/privacy and r/degoogle for you, so this read is on you.
 - Load the four drafts in [posts/](posts/) with the real links pasted in place of the placeholders.
-- Confirm one last time that a stranger can self-host it and that the demo video plays.
+- Confirm one last time that a stranger can self-host the relay, that the iPhone release candidate passes the two-device smoke test, and that the demo video plays.
 - Pick your Day 0: a Tuesday, Wednesday, or Thursday when you can sit at the keyboard for three to four hours in the morning Eastern time to answer comments.
 
 ## What "ready" looks like
@@ -55,7 +58,7 @@ r/selfhosted's rule is that promoted apps must be production ready and have docs
 You are ready to launch when all of these are true:
 
 - The personal account has real, recent, useful history in the target communities and no spam pattern.
-- The repo is public, the README is honest, and someone who is not you has successfully self-hosted it from the written steps.
+- The repo is public, the README is honest, and someone who is not you has successfully self-hosted the relay from the written steps.
 - The demo video exists and is short.
 - The honest metadata limit is written down before anyone asks.
 - You have a Tue-to-Thu morning blocked to be fully present.

@@ -1,15 +1,16 @@
 # Speakeasy iOS Scaffold
 
-This directory contains the initial native SwiftUI source scaffold for the
-Speakeasy iOS MVP.
+This directory contains the native SwiftUI source for the Speakeasy/Kithra
+iPhone MVP. V1 targets iPhone only; iPad support is deferred.
 
 ## Target Shape
 
-`Kithra.xcodeproj` contains the first buildable native app target. The public
-target and scheme are named `Kithra`; the existing source folder and Swift type
-names can remain `Speakeasy` for now. The current source assumes:
+`Kithra.xcodeproj` contains the native app target. The public target and scheme
+are named `Kithra`; the existing source folder and Swift type names can remain
+`Speakeasy` for now. The current source assumes:
 
 - SwiftUI app lifecycle.
+- iPhone device family for V1.
 - iOS 16 or newer for `NavigationStack`.
 - UIKit system camera picker for the first record path.
 - AVFoundation for transcoding and playback preparation.
@@ -50,5 +51,7 @@ short-lived playback file. Outgoing envelopes include a sender-sealed content
 key so sent local history can also be played without exposing plaintext to the
 relay.
 
-Still pending: auth login after restart, persistent local message/cache
-indexing, APNs push, and signed TestFlight/device builds.
+Still pending: expiring challenge-response re-authentication, persistent local
+message/cache indexing, APNs push, and a signed public-eligible candidate plus
+its two-iPhone smoke test. Earlier internal signing/upload checks do not satisfy
+that release-candidate gate.

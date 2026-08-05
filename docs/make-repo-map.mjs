@@ -1,7 +1,7 @@
 // Generates ../speakeasy-map.excalidraw (run: node docs/make-repo-map.mjs from repo root,
-// or node make-repo-map.mjs from docs/). Follows Repos/.claude/diagram-guidelines.md:
-// ink text only, white chips on arrow midpoints with line visible on both sides,
-// edge-to-edge arrows, one accent color, legend for line styles.
+// or node make-repo-map.mjs from docs/). The layout rules are kept here so the
+// map can be regenerated without relying on files outside this repository:
+// ink text, white chips on arrow midpoints, edge-to-edge arrows, one accent.
 // docs/REPO_MAP.md is the source of truth. Preview: node docs/render-map-preview.mjs
 // then npx sharp-cli -i docs/map-preview.svg -o docs/map-preview.png
 import { writeFileSync } from "node:fs";
@@ -126,35 +126,36 @@ function arrow(pts, label, dashed = false, chipAt = null) {
 }
 
 // ── Title + legend ────────────────────────────────────────────────────────────
-text(40, 20, "speakeasy (Kithra): the spec repo behind the app", 24, INK);
-text(40, 54, "verified 2026-07-16 · text twin that stays current: docs/REPO_MAP.md", 12, INK_MUTED, 3);
-els.push(el({ type: "line", x: 760, y: 40, width: 40, height: 0, points: [[0, 0], [40, 0]], strokeColor: ACCENT, strokeWidth: 2, roundness: null }));
-text(808, 32, "how the app gets made", 12, INK_SOFT);
-els.push(el({ type: "line", x: 990, y: 40, width: 40, height: 0, points: [[0, 0], [40, 0]], strokeColor: ACCENT, strokeWidth: 2, strokeStyle: "dashed", roundness: null }));
-text(1038, 32, "runtime path (E2E)", 12, INK_SOFT);
+text(40, 20, "speakeasy / Kithra: implemented repository map", 24, INK);
+text(40, 54, "verified 2026-08-04 · text source: docs/REPO_MAP.md", 12, INK_MUTED, 3);
+els.push(el({ type: "line", x: 860, y: 40, width: 40, height: 0, points: [[0, 0], [40, 0]], strokeColor: ACCENT, strokeWidth: 2, roundness: null }));
+text(908, 32, "ciphertext runtime path", 12, INK_SOFT);
 
 // ── Zones ─────────────────────────────────────────────────────────────────────
-zone(40, 90, 300, 340, "THE PAPER (THIS REPO)", "#f4f0e8");
-zone(430, 90, 260, 340, "THE BUILD", "#eef1f6");
-zone(780, 90, 320, 340, "WHAT PEOPLE GET", "#f1ece5");
-zone(40, 480, 1060, 190, "REFERENCE", "#f2efe9");
+zone(40, 90, 330, 470, "IMPLEMENTED SOURCE", "#f4f0e8");
+zone(420, 90, 800, 470, "RUNTIME + RELEASE STATE", "#eef1f6");
+zone(40, 600, 1180, 150, "REFERENCE + LIMITS", "#f2efe9");
 
 // ── Boxes ─────────────────────────────────────────────────────────────────────
-box(60, 140, 260, 100, "README.md", "the public pitch: the\ncomparison table nobody\nelse can fill");
-box(60, 290, 260, 110, "docs/", "SPEC (MVP), ARCHITECTURE\n(Go relay + Swift app),\nSECURITY (crypto model)");
+box(60, 135, 290, 80, "server/", "Go + SQLite relay; local\nfilesystem ciphertext blobs");
+box(60, 235, 290, 90, "ios/", "Native Swift/SwiftUI iPhone\napp + XCTest + Fastlane");
+box(60, 345, 290, 80, "deploy/", "Docker Compose relay and\npublic support-site assets");
+box(60, 445, 290, 90, "docs/ + testdata/", "API/security/release docs;\nshared protocol fixed vectors");
 
-box(450, 190, 220, 120, "Kithra build (Mac)", "coded from these docs\nwith Codex; lands here\nwhen ready");
+box(445, 160, 200, 130, "Sender iPhone", "record + encrypt locally;\nfresh content key for\neach video", "#7a4a21", "#ffffff", "#f0e6db", "#7a4a21");
+box(750, 175, 180, 100, "Go relay", "store + route\nciphertext; sees\nrouting metadata");
+box(1035, 160, 160, 130, "Recipient iPhone", "verify signed\nenvelope; decrypt\nlocally", "#7a4a21", "#ffffff", "#f0e6db", "#7a4a21");
 
-box(805, 140, 270, 110, "Kithra iOS app", "Swift + libsodium; encrypts\non the device; App Store\nsubmit due Jul 24", "#7a4a21", "#ffffff", "#f0e6db", "#7a4a21");
-box(805, 330, 270, 80, "Go relay server", "self-hosted dumb relay;\nsees only sealed blobs");
+box(445, 350, 350, 130, "Contact verification", "60-digit safety number or signed QR;\npins device keys before authenticated\nmessage exchange");
+box(835, 350, 360, 130, "Pre-submission", "No public App Store URL; not in review.\nInternal TestFlight is only for the exact\nrelease-candidate smoke test.");
 
-box(230, 525, 240, 110, "LICENSE + .gitignore", "MIT; secrets/ stays local\n(git exclude), never staged");
-box(660, 525, 250, 110, "this file", "speakeasy-map.excalidraw;\nregenerate via docs/\nmake-repo-map.mjs");
+box(70, 635, 330, 85, "Fresh content keys", "Reduce single-key blast radius;\nnot Signal-style forward secrecy.");
+box(445, 635, 330, 85, "Self-hosting boundary", "The Go relay is self-hostable;\nthe native iPhone app is not web-hosted.");
+box(820, 635, 360, 85, "Other repository lanes", "GitHub Actions + Android scaffold +\nunpublished marketing drafts.");
 
 // ── Arrows (edge to edge; labeled segments straight, axis-aligned, 2x chip) ──
-arrow([[320, 300], [450, 300]], "guides");                 // docs/ -> build (130px)
-arrow([[670, 220], [805, 220]], "builds");                 // build -> app (135px)
-arrow([[940, 250], [940, 330]], "sealed blobs", true);     // app -> relay (80px vertical, dashed)
+arrow([[645, 225], [750, 225]], "blob");
+arrow([[930, 225], [1035, 225]], "blob");
 
 const doc = {
   type: "excalidraw",

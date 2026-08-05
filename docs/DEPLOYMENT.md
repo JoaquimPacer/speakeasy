@@ -5,8 +5,10 @@ deployment still matters: TLS, stable storage, clean secret handling, and basic
 host hardening protect availability and metadata.
 
 The current server scaffold lives in `server/` and is wired into
-`docker-compose.yml`. It is suitable for local development only until
-challenge-response auth, real crypto bindings, and upload limits are hardened.
+`docker-compose.yml`. An older beta build is deployed behind HTTPS, but neither
+that deployment nor the integrated branch is suitable for public use until
+challenge-response auth, retention, quotas/rate limits, deletion failure
+handling, and upload limits are hardened.
 
 ## Deployment Principles
 

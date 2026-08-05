@@ -8,10 +8,16 @@ tokens, Apple API keys, or server passwords in this file.
 
 - Public app name: Kithra.
 - Bundle ID: `com.joaquimpacer.speakeasy`.
-- First milestone: internal TestFlight.
-- Second milestone: external TestFlight for trusted invited testers.
-- Public App Store review comes after TestFlight proves the beta relay,
-  onboarding, invite flow, send/receive, account deletion, and review metadata.
+- V1 device family: iPhone-only; iPad support is deferred.
+- First milestone: internal TestFlight smoke testing of the exact
+  public-eligible release candidate.
+- External TestFlight is optional and is not required for the first public
+  release.
+- Public App Store review follows a two-iPhone smoke test of the beta relay,
+  onboarding, mutual QR/safety-number verification, send/receive, key-change
+  failure handling, account deletion, and the completed review package.
+- Supply only required iPhone screenshots and confirm the archive reports
+  `UIDeviceFamily = [1]` before upload.
 - France must be excluded from public App Store sale availability. Internal
   TestFlight groups are not country-scoped, so the release lane checks App Store
   availability instead: it blocks if France is enabled and warns while sale
@@ -28,8 +34,7 @@ Recommended cheapest serious beta path:
 
 1. Use the existing DigitalOcean VPS if it has enough spare CPU, RAM, disk, and
    bandwidth.
-2. Put Kithra behind a separate hostname, for example
-   `https://api.kithra.app` or `https://api.<existing-domain>`.
+2. Keep the relay behind `https://api.joaquimpacer.com`.
 3. Use Docker Compose for the relay.
 4. Use Cloudflare Tunnel if you want HTTPS without opening public inbound app
    ports on the VPS.
@@ -51,13 +56,13 @@ The app should talk to an HTTPS hostname, not a LAN IP. Options:
 - Use a provider hostname for a short private test only, then move to your own
   domain before broader review.
 
-The release iOS build currently has a configurable default relay URL:
+The release iPhone build has a configurable default relay URL:
 
 - Debug default: `http://localhost:8080`
-- Release default placeholder: `https://api.kithra.app`
+- Release default: `https://api.joaquimpacer.com`
 
-Update the Release value in `ios/Kithra.xcodeproj` before archiving if the
-chosen beta hostname is different.
+Do not change the Release value without coordinating the relay deployment and
+re-running the complete release smoke test.
 
 ## What "Release Server Config" Means
 
@@ -88,9 +93,12 @@ For a trusted tester:
 
 Owner tasks:
 
-- Choose the beta API hostname.
-- Decide whether to use the existing DigitalOcean VPS or a new tiny Droplet.
-- Point the hostname through DNS or Cloudflare Tunnel.
+- Restore and verify public DNS/TLS for the support and privacy URLs at
+  `kithra.joaquimpacer.com`.
+- Deploy the exact integrated relay version to the existing DigitalOcean host
+  only after separate deployment approval.
+- Add and validate the owner-approved privacy manifest, prepare iPhone
+  screenshots, and verify the release archive advertises only iPhone support.
 - On the next TestFlight upload, expect `Missing Compliance`: Joaquim selected
   the conservative `ITSAppUsesNonExemptEncryption = true` declaration so App
   Store Connect presents its export-compliance questionnaire instead of
@@ -109,11 +117,10 @@ Owner tasks:
 Codex tasks:
 
 - Keep the Docker relay deployable with Compose.
-- Add release default relay URL support in the app.
-- Add account deletion.
-- Draft privacy policy, support page, TestFlight notes, and App Review notes.
-- Verify server tests, simulator build, physical build, and `/healthz` before
-  uploading to TestFlight.
+- Finish the remaining public-release security gates in `docs/BUILD_PLAN.md`.
+- Keep the privacy/support copy aligned with deployed behavior.
+- Verify server tests, simulator tests, a signed archive, two physical iPhones,
+  and `/healthz` before an owner-authorized candidate upload.
 
 ## One-Command Internal TestFlight Upload
 
@@ -131,8 +138,9 @@ The lane reads the ignored App Store Connect Key ID from
 with `APP_STORE_CONNECT_KEY_ID`, `APP_STORE_CONNECT_API_KEY_PATH`, and
 `APP_STORE_CONNECT_ISSUER_ID`.
 
-The lane requires a clean working tree, finds the latest TestFlight build for
-the current marketing version, increments the build number, uses API-key-backed
+The lane requires a clean working tree and selects one more than the maximum of
+the local `CURRENT_PROJECT_VERSION` and every App Store Connect iOS build
+reservation/upload for the exact marketing version. It uses API-key-backed
 Xcode automatic signing, archives the Release configuration, and uploads the
 binary exactly once. After App Store Connect accepts the upload, it creates a
 local commit containing only the Xcode build-number bump; the lane never pushes
@@ -150,18 +158,49 @@ questionnaire in App Store Connect. After the build is cleared, resume that same
 upload with:
 
 ```sh
-cd ios && bundle exec fastlane verify_beta
+cd ios
+bundle exec fastlane verify_beta \
+  version:<version> build_number:<build-number>
 ```
 
 `verify_beta` waits for the selected uploaded build, reports App Store Connect's
 resolved `usesNonExemptEncryption` value, and only attaches the build to the
-`Kithra Internal` group after the compliance gate is clear. Pass
-`version:<version>` and
-`build_number:<number>` if the latest build is not the intended one. Both lanes
-remain internal-only: the exported build is marked
+`Kithra Internal` group after the compliance gate is clear. Both values are
+mandatory; the lane never selects the current or latest build implicitly. The
+`beta`/`verify_beta` path remains internal-only: the exported build is marked
 `testFlightInternalTestingOnly`, external distribution and beta-review
-submission are disabled, and public App Store submission remains a separate
-manual owner action.
+submission are disabled, and that binary cannot be the public App Store
+candidate.
+
+## Owner-Gated Public-Eligible Candidate
+
+The separate `public_candidate` lane creates a TestFlight build that remains
+eligible for a later App Review submission by deliberately omitting
+`testFlightInternalTestingOnly`. It still disables external distribution and
+beta-review submission, attaches only to `Kithra Internal` after export
+compliance clears, and never submits for App Review or releases the app. It has
+not been run from this integration branch.
+
+Running it signs and uploads a binary, so do not invoke it without Joaquim's
+separate approval. The explicit confirmation is an owner gate, not a secret:
+
+```sh
+cd ios
+KITHRA_PUBLIC_CANDIDATE_CONFIRM=I_CONFIRM_PUBLIC_ELIGIBLE_CANDIDATE \
+  bundle exec fastlane public_candidate
+```
+
+If processing or export compliance pauses the lane, resume the exact existing
+build without uploading another binary:
+
+```sh
+cd ios
+KITHRA_PUBLIC_CANDIDATE_CONFIRM=I_CONFIRM_PUBLIC_ELIGIBLE_CANDIDATE \
+  bundle exec fastlane verify_public_candidate \
+  version:<version> build_number:<build-number>
+```
+
+Public App Store submission and release remain separate manual owner actions.
 
 Apple's references for this owner step are [Provide export compliance
 information for beta builds](https://developer.apple.com/help/app-store-connect/test-a-beta-version/provide-export-compliance-information-for-beta-builds/)

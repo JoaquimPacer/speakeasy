@@ -2,16 +2,21 @@
 
 ## Beta App Description
 
-Kithra is a private async video messaging app. Record a short video, send it to
-a contact, and watch prior messages in a camera-first conversation view.
+Kithra is a private iPhone async video messaging app. Record a short video,
+send it to a contact, and watch prior messages in a camera-first conversation
+view.
 
-Kithra encrypts videos on-device before upload. The relay stores encrypted blobs
-and routing metadata only.
+Kithra encrypts videos on-device before upload. The relay receives video
+payloads only as encrypted blobs and processes the account, authentication, and
+routing metadata disclosed in the privacy policy.
 
 ## What To Test
 
-- Register a new username.
-- Create an invite code on one device and accept it on another.
+- Use two iPhones and register a different username on each.
+- Create an invite code on one iPhone and accept it on the other.
+- On both iPhones, open the contact's Security screen and either scan each
+  other's signed QR code or compare all 60 safety-number digits over a trusted
+  channel. Confirm messaging remains disabled until both sides verify.
 - Tap a contact to open the camera-first conversation.
 - Record a video, stop, and confirm it auto-sends.
 - Confirm the recipient sees the message without manually refreshing while the
@@ -25,7 +30,9 @@ and routing metadata only.
 - For the next `ITSAppUsesNonExemptEncryption = true` upload, expect `Missing
   Compliance` until Joaquim completes App Store Connect's export-compliance
   questionnaire. Do not invite testers while the answer or Apple review is
-  pending; after clearance, run `bundle exec fastlane verify_beta` from `ios/`.
+  pending; after clearance, run `bundle exec fastlane verify_beta
+  version:<version> build_number:<build-number>` from `ios/` for that exact
+  upload.
 - Confirm an internal or external tester group has the processed build attached.
 - Send tester invites only after the build is visible in the selected group.
 
@@ -40,12 +47,16 @@ and metadata only; it cannot decrypt video content.
 
 To test:
 
-1. Launch the app and register a username.
-2. Use two devices or a device plus simulator.
+1. Launch the app on two iPhones.
+2. Register a different username on each iPhone.
 3. On device A, create an invite code from Settings.
 4. On device B, accept the invite code.
-5. Tap the contact, record a video, stop recording, and wait for auto-send.
-6. On the recipient device, open the contact and play the received video.
+5. On each iPhone, open the contact's Security screen. Scan the signed QR code
+   shown by the other iPhone, or compare all 60 safety-number digits and confirm
+   the match. This out-of-band step is required on both devices before
+   messaging.
+6. Tap the contact, record a video, stop recording, and wait for auto-send.
+7. On the recipient iPhone, open the contact and play the received video.
 
 Beta relay URL: `https://api.joaquimpacer.com`
 

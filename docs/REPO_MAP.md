@@ -1,38 +1,57 @@
-# Repo map: what every file is for
+# Repository map
 
-The one-page orientation for this repository. If the structure changes, update this file and regenerate the visual map in the same pull request (`node docs/make-repo-map.mjs` rewrites `speakeasy-map.excalidraw` at the repo root; drawing rules live in `Repos/.claude/diagram-guidelines.md`).
+This is the current text map of the Speakeasy repository. The public product is
+the Kithra native iPhone app. Run `node docs/make-repo-map.mjs` and then
+`node docs/render-map-preview.mjs` whenever this map changes so the Excalidraw
+and SVG versions stay synchronized.
 
-Last verified: 2026-07-16.
+Last verified: 2026-08-04.
 
-## The one-sentence version
+## Current state
 
-This repo is the paper behind Kithra (working name speakeasy): the spec, architecture, and security model for an end-to-end encrypted, self-hosted video-messaging app; the app itself is being built from these docs on the Mac, with App Store submission targeted for July 24.
+This repository contains an implemented Go relay, a native Swift/SwiftUI iPhone
+client, protocol tests, deployment assets, and release tooling. Kithra is still
+pre-submission: it has no public App Store URL and is not currently in App Store
+review. Internal TestFlight is for smoke-testing the exact release candidate,
+not public distribution.
 
 ## What lives where
 
-| File / folder | What it is | Touch it when |
-|---|---|---|
-| [README.md](../README.md) | The public pitch: why Marco Polo's privacy rating is a WARNING, and the comparison table only Speakeasy fills (end-to-end encrypted + self-hosted + open source + async video). | The positioning or scope changes. |
-| `docs/` | [SPEC.md](SPEC.md) (the MVP scope and flows), [ARCHITECTURE.md](ARCHITECTURE.md) (Go relay + Swift iOS client, and the planned `server/` + `ios/` layout), [SECURITY.md](SECURITY.md) (libsodium crypto model, threat model), this map, and [MARKETING.md](MARKETING.md). | The design changes; keep SPEC and the app honest with each other. |
-| `LICENSE` | MIT. Open source is part of the trust story. | Never, realistically. |
-| `.gitignore` + local `secrets/` | `secrets/` exists only on this machine (kept out via `.git/info/exclude`); never stage it. | Never stage secrets, in any repo. |
+| Path | Purpose |
+|---|---|
+| [`server/`](../server/) | Go relay with SQLite metadata and local-filesystem ciphertext storage. |
+| [`ios/`](../ios/) | Native Kithra iPhone client, XCTest target, Xcode project, and Fastlane tooling. |
+| [`android/`](../android/) | Native Kotlin scaffold for a later release; it is not a usable V1 client. |
+| [`deploy/`](../deploy/) and [`docker-compose.yml`](../docker-compose.yml) | Relay and public support-site deployment assets. Self-hosting applies to the relay, not installation of the iPhone app. |
+| [`.github/workflows/`](../.github/workflows/) | Locally signed iPhone simulator tests, Go relay checks, and Android scaffold builds; no Apple distribution credentials are used. |
+| [`testdata/protocol/`](../testdata/protocol/) | Shared fixed vectors for identity verification and Message Envelope v2. |
+| [`docs/`](./) | Build status, API, protocol, security, deployment, owner setup, and App Store preparation. |
+| [`marketing/`](../marketing/) | Unpublished launch planning and draft posts. Nothing there is ready to publish without a final factual review. |
+| [`README.md`](../README.md) | Public project overview. |
 
-Root file `speakeasy-map.excalidraw` is the visual version of this page.
+Root file [`speakeasy-map.excalidraw`](../speakeasy-map.excalidraw) is the visual
+version of this page. [`map-preview.svg`](map-preview.svg) and
+[`map-preview.png`](map-preview.png) are generated previews.
 
-## How the app gets made (and what the repo is NOT)
+## Runtime path
 
 ```mermaid
 flowchart LR
-  DOCS["docs/ SPEC + ARCHITECTURE<br/>+ SECURITY (this repo)"]
-  BUILD["Kithra build<br/>Codex on the Mac"]
-  APP["Kithra iOS app<br/>Swift + libsodium;<br/>App Store submit Jul 24"]
-  RELAY["Go relay server<br/>self-hosted, sees only<br/>sealed blobs"]
+  A["Sender's iPhone\nrecord + encrypt locally"]
+  R["Self-hostable Go relay\nstore and route ciphertext"]
+  B["Recipient's iPhone\nverify + decrypt locally"]
 
-  DOCS -->|guides| BUILD -->|ships| APP
-  APP -.->|sealed blobs only| RELAY
+  A -->|ciphertext + signed envelope| R
+  R -->|ciphertext + signed envelope| B
 ```
 
-Two details worth remembering when explaining this:
-
-1. This checkout is the paper, not the product. The `server/` and `ios/` folders in ARCHITECTURE.md are the planned layout; the working app code is on the Mac and lands here when it's ready. Nothing in this repo builds or deploys.
-2. The server is deliberately dumb. Keys never leave the devices, so the relay (even Joaquim's own) can store and forward videos it can never watch. What it does see, honestly: who messaged whom, when, and how big the blob was.
+- Each video receives a fresh random content key. That limits the effect of a
+  single content-key exposure, but V1 has no prekey ratchet and does not provide
+  Signal-style forward secrecy.
+- Users can compare a 60-digit safety number or scan a signed, peer-specific QR
+  code to pin the expected device keys. Signed Message Envelope v2 then binds
+  message metadata and ciphertext to those keys.
+- The relay cannot decrypt verified message content. It still sees routing and
+  timing metadata and can delay, replay, reorder, or withhold ciphertext.
+- The current server stores blobs on the local filesystem. Optional
+  S3-compatible storage is not implemented.
