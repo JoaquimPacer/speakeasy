@@ -1,0 +1,14 @@
+services:
+  speakeasy:
+    build:
+      context: ../../server
+    environment:
+      SPEAKEASY_ADDR: ":8080"
+      DB_PATH: /data/speakeasy.db
+      STORAGE_PATH: /data/blobs
+      UNDELIVERED_RETENTION_DAYS: "7"
+    ports:
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - /srv/speakeasy/data:/data
+    restart: unless-stopped

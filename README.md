@@ -38,7 +38,7 @@ Record a video, send it encrypted. Only the person you sent it to can watch it. 
 
 - **Server:** Go — lightweight encrypted blob relay, single binary, tiny Docker image
 - **Client:** Swift (iOS) — native camera/crypto/Keychain access. Kotlin (Android) to follow.
-- **Crypto:** [libsodium](https://doc.libsodium.org/) — XChaCha20-Poly1305, per-message ephemeral keys
+- **Crypto:** [libsodium](https://doc.libsodium.org/) — XChaCha20-Poly1305, per-message encrypted content keys
 - **Deploy:** Docker + docker-compose (one-command self-host)
 - **Storage:** Local filesystem + optional S3-compatible
 
@@ -73,14 +73,20 @@ That's it. Your server, your data, your rules.
 ## Security
 
 - **libsodium** — battle-tested, hard to misuse
-- **Per-message ephemeral keys** — forward secrecy by default
+- **Per-message content keys** — each video is encrypted independently; full Signal-style forward secrecy is a V2 goal
 - **No analytics, no tracking, no telemetry** — zero data collection
 - **No phone number required** — usernames or invite codes
 - **Open source** — verify everything yourself
 
 ## Project Status
 
-🚧 **Early development** — spec complete, building MVP.
+🚧 **Early development** — specs and initial server/iOS scaffolds are in progress.
+
+## Planning Docs
+
+- `docs/BUILD_PLAN.md` — active build plan, agent handoff, roadmap, and status log
+- `docs/OWNER_SETUP.md` — owner checklist for Apple, DNS, CI secrets, APNs, and later Google Play
+- `docs/API.md` — first local vertical-slice API contract
 
 ## License
 
