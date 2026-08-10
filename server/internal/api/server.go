@@ -14,6 +14,7 @@ import (
 	"math"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 	"unicode"
 	"unicode/utf8"
@@ -21,28 +22,57 @@ import (
 	"github.com/joaquimpacer/speakeasy/server/internal/storage"
 )
 
-const maxUploadBytes = 512 << 20
-
 type Server struct {
 	db            *sql.DB
 	store         storage.Store
 	startedAt     time.Time
 	retentionDays int
+	options       Options
+	now           func() time.Time
+
+	blobMutationMu sync.Mutex
+	abuseWriteMu   sync.Mutex
+
+	registrationIPLimiter     *fixedWindowLimiter
+	registrationGlobalLimiter *fixedWindowLimiter
+	authIPLimiter             *fixedWindowLimiter
+	authGlobalLimiter         *fixedWindowLimiter
+	uploadAccountLimiter      *fixedWindowLimiter
+	inviteAccountLimiter      *fixedWindowLimiter
+	reportAccountLimiter      *fixedWindowLimiter
 }
 
 func New(db *sql.DB, store storage.Store, retentionDays int) *Server {
-	return &Server{
+	return NewWithOptions(db, store, Options{RetentionDays: retentionDays})
+}
+
+func NewWithOptions(db *sql.DB, store storage.Store, options Options) *Server {
+	options = normalizeOptions(options)
+	server := &Server{
 		db:            db,
 		store:         store,
 		startedAt:     time.Now().UTC(),
-		retentionDays: retentionDays,
+		retentionDays: options.RetentionDays,
+		options:       options,
+		now:           time.Now,
 	}
+	server.registrationIPLimiter = newFixedWindowLimiter(options.RegistrationRatePerIP, options.RegistrationRateWindow)
+	server.registrationGlobalLimiter = newFixedWindowLimiter(options.RegistrationRateGlobal, options.RegistrationRateWindow)
+	server.authIPLimiter = newFixedWindowLimiter(options.AuthRatePerIP, options.AuthRateWindow)
+	server.authGlobalLimiter = newFixedWindowLimiter(options.AuthRateGlobal, options.AuthRateWindow)
+	server.uploadAccountLimiter = newFixedWindowLimiter(options.UploadRatePerAccount, options.UploadRateWindow)
+	server.inviteAccountLimiter = newFixedWindowLimiter(options.InviteRatePerAccount, options.InviteRateWindow)
+	server.reportAccountLimiter = newFixedWindowLimiter(options.ReportRatePerAccount, options.ReportRateWindow)
+	return server
 }
 
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", s.handleHealth)
 	mux.HandleFunc("/auth/register", s.handleRegister)
+	mux.HandleFunc("/auth/challenge", s.handleAuthChallenge)
+	mux.HandleFunc("/auth/login", s.handleLogin)
+	mux.HandleFunc("/auth/logout", s.handleLogout)
 	mux.HandleFunc("/account", s.handleAccount)
 	mux.HandleFunc("/contacts/invite", s.handleCreateInvite)
 	mux.HandleFunc("/contacts/accept", s.handleAcceptInvite)
@@ -113,6 +143,8 @@ const (
 	maxEnvelopeMIMETypeUTF8Bytes   = 255
 	maxKeyFingerprintUTF8Bytes     = 256
 	maxThumbnailPathUTF8Bytes      = 2 << 10
+	maxReportReasonUTF8Bytes       = 128
+	maxReportDetailsUTF8Bytes      = 4 << 10
 	authenticatedEnvelopeV2        = 2
 	xChaCha20Poly1305Algorithm     = "XChaCha20-Poly1305"
 	sealedContentKeyAlgorithm      = "crypto_box_seal"
@@ -239,6 +271,24 @@ type reportRequest struct {
 	Details        string `json:"details"`
 }
 
+func (r *reportRequest) UnmarshalJSON(data []byte) error {
+	if !utf8.Valid(data) {
+		return errors.New("report JSON must be valid UTF-8")
+	}
+	type wireReportRequest reportRequest
+	var decoded wireReportRequest
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&decoded); err != nil {
+		return err
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		return errors.New("report JSON must contain exactly one value")
+	}
+	*r = reportRequest(decoded)
+	return nil
+}
+
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		methodNotAllowed(w, http.MethodGet)
@@ -290,7 +340,15 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		methodNotAllowed(w, http.MethodPost)
 		return
 	}
-
+	clientIP := s.clientIP(r)
+	if !s.allowScopedThenGlobal(
+		w,
+		s.registrationIPLimiter,
+		clientIP,
+		s.registrationGlobalLimiter,
+	) {
+		return
+	}
 	var req registerRequest
 	if !readJSON(w, r, &req) {
 		return
@@ -310,8 +368,9 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "encryptionPublicKey and signingPublicKey must each decode to exactly 32 bytes", http.StatusBadRequest)
 		return
 	}
-
-	now := time.Now().UTC().Format(time.RFC3339)
+	nowTime := s.now().UTC().Truncate(time.Second)
+	now := nowTime.Format(time.RFC3339)
+	expiresAt := nowTime.Add(s.options.SessionTTL).Format(time.RFC3339)
 	userID := mustID()
 	deviceID := mustID()
 	token := mustToken()
@@ -353,10 +412,11 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 
 	if _, err := tx.ExecContext(
 		r.Context(),
-		`INSERT INTO sessions(token, user_id, device_id, created_at) VALUES (?, ?, ?, ?)`,
-		token,
+		`INSERT INTO sessions(token, user_id, device_id, expires_at, created_at) VALUES (?, ?, ?, ?, ?)`,
+		bearerTokenHash(token),
 		userID,
 		deviceID,
+		expiresAt,
 		now,
 	); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -368,6 +428,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	w.Header().Set("Cache-Control", "no-store")
 	writeJSON(w, http.StatusCreated, authSessionResponse{
 		User: userResponse{
 			ID:        userID,
@@ -383,6 +444,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 			CreatedAt:           now,
 		},
 		BearerToken: token,
+		ExpiresAt:   expiresAt,
 	})
 }
 
@@ -400,6 +462,9 @@ func (s *Server) handleAccount(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+
+	s.blobMutationMu.Lock()
+	defer s.blobMutationMu.Unlock()
 
 	rows, err := s.db.QueryContext(
 		r.Context(),
@@ -458,13 +523,64 @@ func (s *Server) handleCreateInvite(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	if !s.allowRate(w, s.inviteAccountLimiter, principal.userID) {
+		return
+	}
+
+	s.abuseWriteMu.Lock()
+	defer s.abuseWriteMu.Unlock()
 
 	inviteID := mustID()
 	code := mustInviteCode()
-	expiresAt := time.Now().UTC().Add(7 * 24 * time.Hour).Format(time.RFC3339)
-	now := time.Now().UTC().Format(time.RFC3339)
+	nowTime := s.now().UTC().Truncate(time.Second)
+	expiresAt := nowTime.Add(7 * 24 * time.Hour).Format(time.RFC3339)
+	now := nowTime.Format(time.RFC3339)
 
-	_, err := s.db.ExecContext(
+	tx, err := s.db.BeginTx(r.Context(), nil)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(
+		r.Context(),
+		`UPDATE invites SET status = 'expired' WHERE status = 'pending' AND expires_at <= ?`,
+		now,
+	); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	var accountRecords int
+	var outstanding int
+	if err := tx.QueryRowContext(
+		r.Context(),
+		`SELECT COUNT(*), COALESCE(SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END), 0)
+		   FROM invites WHERE inviter_user_id = ?`,
+		principal.userID,
+	).Scan(&accountRecords, &outstanding); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if outstanding >= s.options.MaxOutstandingInvitesPerAccount {
+		http.Error(w, "outstanding invite limit reached", http.StatusTooManyRequests)
+		return
+	}
+	if accountRecords >= s.options.MaxInviteRecordsPerAccount {
+		http.Error(w, "account invite record capacity reached", http.StatusInsufficientStorage)
+		return
+	}
+	var totalRecords int
+	if err := tx.QueryRowContext(r.Context(), `SELECT COUNT(*) FROM invites`).Scan(&totalRecords); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if totalRecords >= s.options.MaxInviteRecordsTotal {
+		http.Error(w, "relay invite record capacity reached", http.StatusInsufficientStorage)
+		return
+	}
+
+	_, err = tx.ExecContext(
 		r.Context(),
 		`INSERT INTO invites(id, code, inviter_user_id, inviter_device_id, expires_at, created_at)
 		 VALUES (?, ?, ?, ?, ?, ?)`,
@@ -476,6 +592,10 @@ func (s *Server) handleCreateInvite(w http.ResponseWriter, r *http.Request) {
 		now,
 	)
 	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if err := tx.Commit(); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -508,34 +628,72 @@ func (s *Server) handleAcceptInvite(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var inviterID string
-	err := s.db.QueryRowContext(
-		r.Context(),
-		`SELECT inviter_user_id FROM invites
-		 WHERE code = ? AND status = 'pending' AND expires_at > ?`,
-		code,
-		time.Now().UTC().Format(time.RFC3339),
-	).Scan(&inviterID)
-	if errors.Is(err, sql.ErrNoRows) {
-		http.Error(w, "invite not found or expired", http.StatusNotFound)
-		return
-	}
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	if inviterID == principal.userID {
-		http.Error(w, "cannot accept your own invite", http.StatusBadRequest)
-		return
-	}
-
-	now := time.Now().UTC().Format(time.RFC3339)
+	now := s.now().UTC().Format(time.RFC3339)
 	tx, err := s.db.BeginTx(r.Context(), nil)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	defer tx.Rollback()
+
+	claim, err := tx.ExecContext(
+		r.Context(),
+		`UPDATE invites
+		    SET status = 'accepted', accepted_by_user_id = ?, accepted_at = ?
+		  WHERE code = ? AND status = 'pending' AND expires_at > ?
+		    AND inviter_user_id <> ?`,
+		principal.userID,
+		now,
+		code,
+		now,
+		principal.userID,
+	)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	claimed, err := claim.RowsAffected()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if claimed != 1 {
+		if claimed != 0 {
+			http.Error(w, "invite claim affected an unexpected number of rows", http.StatusInternalServerError)
+			return
+		}
+
+		var pendingInviterID string
+		lookupErr := tx.QueryRowContext(
+			r.Context(),
+			`SELECT inviter_user_id FROM invites
+			  WHERE code = ? AND status = 'pending' AND expires_at > ?`,
+			code,
+			now,
+		).Scan(&pendingInviterID)
+		if lookupErr == nil && pendingInviterID == principal.userID {
+			http.Error(w, "cannot accept your own invite", http.StatusBadRequest)
+			return
+		}
+		if lookupErr != nil && !errors.Is(lookupErr, sql.ErrNoRows) {
+			http.Error(w, lookupErr.Error(), http.StatusInternalServerError)
+			return
+		}
+		http.Error(w, "invite not found or expired", http.StatusNotFound)
+		return
+	}
+
+	var inviterID string
+	if err := tx.QueryRowContext(
+		r.Context(),
+		`SELECT inviter_user_id FROM invites
+		  WHERE code = ? AND status = 'accepted' AND accepted_by_user_id = ?`,
+		code,
+		principal.userID,
+	).Scan(&inviterID); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 
 	for _, pair := range [][2]string{{principal.userID, inviterID}, {inviterID, principal.userID}} {
 		if _, err := tx.ExecContext(
@@ -548,17 +706,6 @@ func (s *Server) handleAcceptInvite(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-	}
-
-	if _, err := tx.ExecContext(
-		r.Context(),
-		`UPDATE invites SET status = 'accepted', accepted_by_user_id = ?, accepted_at = ? WHERE code = ?`,
-		principal.userID,
-		now,
-		code,
-	); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
 	}
 
 	if err := tx.Commit(); err != nil {
@@ -700,7 +847,8 @@ func (s *Server) listMessages(w http.ResponseWriter, r *http.Request) {
 		        blob_size, status, COALESCE(delivered_at, ''), COALESCE(blob_deleted_at, ''),
 		        created_at, expires_at
 		   FROM messages
-		  WHERE (sender_user_id = ? OR recipient_user_id = ?) AND status <> 'deleted'
+		  WHERE (sender_user_id = ? OR recipient_user_id = ?)
+		    AND status NOT IN ('deleted', 'expired')
 		  ORDER BY created_at DESC`,
 		principal.userID,
 		principal.userID,
@@ -729,11 +877,27 @@ func (s *Server) uploadMessage(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	if !s.allowRate(w, s.uploadAccountLimiter, principal.userID) {
+		return
+	}
 
-	r.Body = http.MaxBytesReader(w, r.Body, maxUploadBytes)
-	if err := r.ParseMultipartForm(32 << 20); err != nil {
+	maxRequestBytes := s.options.MaxUploadBytes + maxUploadMetadataBytes + (1 << 20)
+	if r.ContentLength > maxRequestBytes {
+		http.Error(w, "upload is too large", http.StatusRequestEntityTooLarge)
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBytes)
+	if err := r.ParseMultipartForm(8 << 20); err != nil {
+		var maxBytesError *http.MaxBytesError
+		if errors.As(err, &maxBytesError) {
+			http.Error(w, "upload is too large", http.StatusRequestEntityTooLarge)
+			return
+		}
 		http.Error(w, "invalid multipart upload", http.StatusBadRequest)
 		return
+	}
+	if r.MultipartForm != nil {
+		defer r.MultipartForm.RemoveAll()
 	}
 
 	metadataPart := r.FormValue("metadata")
@@ -792,12 +956,24 @@ func (s *Server) uploadMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	file, _, err := r.FormFile("blob")
+	file, fileHeader, err := r.FormFile("blob")
 	if err != nil {
 		http.Error(w, "blob part is required", http.StatusBadRequest)
 		return
 	}
 	defer file.Close()
+	if fileHeader.Size <= 0 {
+		http.Error(w, "blob must not be empty", http.StatusBadRequest)
+		return
+	}
+	if fileHeader.Size > s.options.MaxUploadBytes {
+		http.Error(w, "blob is too large", http.StatusRequestEntityTooLarge)
+		return
+	}
+	if metadata.BlobSize != fileHeader.Size {
+		http.Error(w, "blobSize must match the uploaded ciphertext size", http.StatusBadRequest)
+		return
+	}
 
 	if blocked, err := s.isBlocked(r.Context(), principal.userID, metadata.RecipientID); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -807,24 +983,73 @@ func (s *Server) uploadMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	s.blobMutationMu.Lock()
+	defer s.blobMutationMu.Unlock()
+	if err := s.checkPendingQuota(r.Context(), principal.userID, metadata.RecipientID, fileHeader.Size); err != nil {
+		var quotaErr *pendingQuotaError
+		if errors.As(err, &quotaErr) {
+			http.Error(w, quotaErr.Error(), http.StatusInsufficientStorage)
+			return
+		}
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
 	messageID := mustID()
 	blobKey := "messages/" + messageID + ".blob"
+	now := s.now().UTC().Truncate(time.Second)
+	expiresAt := now.Add(time.Duration(s.retentionDays) * 24 * time.Hour).Format(time.RFC3339)
+	nowText := now.Format(time.RFC3339)
+	if _, err := s.db.ExecContext(
+		r.Context(),
+		`INSERT INTO pending_blob_writes(
+			blob_path, sender_user_id, recipient_user_id, blob_size, state, created_at
+		 ) VALUES (?, ?, ?, ?, 'pending', ?)`,
+		blobKey,
+		principal.userID,
+		metadata.RecipientID,
+		metadata.BlobSize,
+		nowText,
+	); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 	if err := s.store.Write(r.Context(), blobKey, file); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	now := time.Now().UTC()
-	expiresAt := now.Add(time.Duration(s.retentionDays) * 24 * time.Hour).Format(time.RFC3339)
-	nowText := now.Format(time.RFC3339)
-
-	if metadata.BlobSize <= 0 {
-		if size, err := s.blobSize(blobKey); err == nil {
-			metadata.BlobSize = size
+	if size, err := s.blobSize(blobKey); err != nil || size != metadata.BlobSize {
+		verificationErr := err
+		if verificationErr == nil {
+			verificationErr = fmt.Errorf("actual size %d does not match declared size %d", size, metadata.BlobSize)
 		}
+		http.Error(w, "verify uploaded ciphertext: "+verificationErr.Error(), http.StatusInternalServerError)
+		return
 	}
 
-	_, err = s.db.ExecContext(
+	tx, err := s.db.BeginTx(r.Context(), nil)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer tx.Rollback()
+	claim, err := tx.ExecContext(
+		r.Context(),
+		`DELETE FROM pending_blob_writes WHERE blob_path = ? AND state = 'pending'`,
+		blobKey,
+	)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	claimed, err := claim.RowsAffected()
+	if err != nil || claimed != 1 {
+		http.Error(w, "uploaded ciphertext cleanup ownership changed before message commit", http.StatusConflict)
+		return
+	}
+
+	_, err = tx.ExecContext(
 		r.Context(),
 		`INSERT INTO messages(
 			id, sender_user_id, sender_device_id, recipient_user_id, recipient_device_id, envelope_json,
@@ -843,7 +1068,10 @@ func (s *Server) uploadMessage(w http.ResponseWriter, r *http.Request) {
 		nowText,
 	)
 	if err != nil {
-		_ = s.store.Delete(context.Background(), blobKey)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if err := tx.Commit(); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -935,6 +1163,9 @@ func (s *Server) acknowledgeDelivered(w http.ResponseWriter, r *http.Request, me
 		return
 	}
 
+	s.blobMutationMu.Lock()
+	defer s.blobMutationMu.Unlock()
+
 	message, err := s.lookupMessage(r.Context(), messageID, principal.userID)
 	if errors.Is(err, sql.ErrNoRows) {
 		http.NotFound(w, r)
@@ -957,26 +1188,37 @@ func (s *Server) acknowledgeDelivered(w http.ResponseWriter, r *http.Request, me
 		}
 	}
 
-	_, err = s.db.ExecContext(
+	result, err := s.db.ExecContext(
 		r.Context(),
 		`UPDATE messages
-		    SET status = 'delivered', delivered_at = COALESCE(delivered_at, ?),
+		    SET status = CASE WHEN status = 'watched' THEN 'watched' ELSE 'delivered' END,
+		        delivered_at = COALESCE(delivered_at, ?),
 		        blob_deleted_at = COALESCE(blob_deleted_at, ?), encrypted_blob_path = '',
 		        updated_at = ?
-		  WHERE id = ?`,
+		  WHERE id = ? AND recipient_user_id = ? AND status IN ('sent', 'delivered', 'watched')`,
 		now,
 		now,
 		now,
 		messageID,
+		principal.userID,
 	)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	updated, err := result.RowsAffected()
+	if err != nil || updated != 1 {
+		http.Error(w, "message status changed concurrently", http.StatusConflict)
+		return
+	}
+	status := "delivered"
+	if message.Status == "watched" {
+		status = "watched"
+	}
 
 	writeJSON(w, http.StatusOK, deliveredResponse{
 		MessageID:   messageID,
-		Status:      "delivered",
+		Status:      status,
 		BlobDeleted: true,
 	})
 }
@@ -996,27 +1238,50 @@ func (s *Server) updateMessageStatus(w http.ResponseWriter, r *http.Request, mes
 		return
 	}
 
-	if _, err := s.lookupMessage(r.Context(), messageID, principal.userID); errors.Is(err, sql.ErrNoRows) {
+	s.blobMutationMu.Lock()
+	defer s.blobMutationMu.Unlock()
+
+	message, err := s.lookupMessage(r.Context(), messageID, principal.userID)
+	if errors.Is(err, sql.ErrNoRows) {
 		http.NotFound(w, r)
 		return
-	} else if err != nil {
+	}
+	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	if message.RecipientID != principal.userID {
+		http.Error(w, "only the recipient can mark a message watched", http.StatusForbidden)
+		return
+	}
+	if message.EncryptedBlobPath != "" || (message.Status != "delivered" && message.Status != "watched") {
+		http.Error(w, "message must be delivered and its relay blob deleted before it can be watched", http.StatusConflict)
+		return
+	}
 
-	now := time.Now().UTC().Format(time.RFC3339)
-	if _, err := s.db.ExecContext(
+	now := s.now().UTC().Format(time.RFC3339)
+	result, err := s.db.ExecContext(
 		r.Context(),
-		`UPDATE messages SET status = 'watched', watched_at = ?, updated_at = ? WHERE id = ?`,
+		`UPDATE messages
+		    SET status = 'watched', watched_at = COALESCE(watched_at, ?), updated_at = ?
+		  WHERE id = ? AND recipient_user_id = ? AND encrypted_blob_path = ''
+		    AND status IN ('delivered', 'watched')`,
 		now,
 		now,
 		messageID,
-	); err != nil {
+		principal.userID,
+	)
+	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	updated, err := result.RowsAffected()
+	if err != nil || updated != 1 {
+		http.Error(w, "message status changed concurrently", http.StatusConflict)
+		return
+	}
 
-	message, err := s.lookupMessage(r.Context(), messageID, principal.userID)
+	message, err = s.lookupMessage(r.Context(), messageID, principal.userID)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -1030,6 +1295,9 @@ func (s *Server) deleteMessage(w http.ResponseWriter, r *http.Request, messageID
 		return
 	}
 
+	s.blobMutationMu.Lock()
+	defer s.blobMutationMu.Unlock()
+
 	message, err := s.lookupMessage(r.Context(), messageID, principal.userID)
 	if errors.Is(err, sql.ErrNoRows) {
 		http.NotFound(w, r)
@@ -1041,7 +1309,10 @@ func (s *Server) deleteMessage(w http.ResponseWriter, r *http.Request, messageID
 	}
 
 	if message.EncryptedBlobPath != "" {
-		_ = s.store.Delete(r.Context(), message.EncryptedBlobPath)
+		if err := s.store.Delete(r.Context(), message.EncryptedBlobPath); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
 	}
 
 	now := time.Now().UTC().Format(time.RFC3339)
@@ -1124,6 +1395,9 @@ func (s *Server) handleReports(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	if !s.allowRate(w, s.reportAccountLimiter, principal.userID) {
+		return
+	}
 
 	var req reportRequest
 	if !readJSON(w, r, &req) {
@@ -1136,8 +1410,47 @@ func (s *Server) handleReports(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "reason is required", http.StatusBadRequest)
 		return
 	}
+	if !utf8.ValidString(req.Reason) || len(req.Reason) > maxReportReasonUTF8Bytes {
+		http.Error(w, "reason must be valid UTF-8 and at most 128 bytes", http.StatusBadRequest)
+		return
+	}
+	if !utf8.ValidString(req.Details) || len(req.Details) > maxReportDetailsUTF8Bytes {
+		http.Error(w, "details must be valid UTF-8 and at most 4096 bytes", http.StatusBadRequest)
+		return
+	}
 
-	_, err := s.db.ExecContext(
+	s.abuseWriteMu.Lock()
+	defer s.abuseWriteMu.Unlock()
+	tx, err := s.db.BeginTx(r.Context(), nil)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer tx.Rollback()
+	var accountRecords int
+	if err := tx.QueryRowContext(
+		r.Context(),
+		`SELECT COUNT(*) FROM reports WHERE reporter_user_id = ?`,
+		principal.userID,
+	).Scan(&accountRecords); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if accountRecords >= s.options.MaxReportRecordsPerAccount {
+		http.Error(w, "account report record capacity reached", http.StatusInsufficientStorage)
+		return
+	}
+	var totalRecords int
+	if err := tx.QueryRowContext(r.Context(), `SELECT COUNT(*) FROM reports`).Scan(&totalRecords); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if totalRecords >= s.options.MaxReportRecordsTotal {
+		http.Error(w, "relay report record capacity reached", http.StatusInsufficientStorage)
+		return
+	}
+
+	_, err = tx.ExecContext(
 		r.Context(),
 		`INSERT INTO reports(id, reporter_user_id, reported_user_id, message_id, reason, details)
 		 VALUES (?, ?, NULLIF(?, ''), NULLIF(?, ''), ?, ?)`,
@@ -1149,6 +1462,10 @@ func (s *Server) handleReports(w http.ResponseWriter, r *http.Request) {
 		req.Details,
 	)
 	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if err := tx.Commit(); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -1167,9 +1484,9 @@ func (s *Server) authenticate(w http.ResponseWriter, r *http.Request) (principal
 	err := s.db.QueryRowContext(
 		r.Context(),
 		`SELECT user_id, device_id FROM sessions
-		  WHERE token = ? AND (expires_at IS NULL OR expires_at > ?)`,
-		token,
-		time.Now().UTC().Format(time.RFC3339),
+		  WHERE token = ? AND expires_at > ?`,
+		bearerTokenHash(token),
+		s.now().UTC().Format(time.RFC3339),
 	).Scan(&p.userID, &p.deviceID)
 	if errors.Is(err, sql.ErrNoRows) {
 		http.Error(w, "invalid bearer token", http.StatusUnauthorized)
@@ -1179,7 +1496,6 @@ func (s *Server) authenticate(w http.ResponseWriter, r *http.Request) (principal
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return principal{}, false
 	}
-
 	return p, true
 }
 
@@ -1218,7 +1534,8 @@ func (s *Server) lookupMessage(ctx context.Context, messageID string, userID str
 		        blob_size, status, COALESCE(delivered_at, ''), COALESCE(blob_deleted_at, ''),
 		        created_at, expires_at
 		   FROM messages
-		  WHERE id = ? AND (sender_user_id = ? OR recipient_user_id = ?) AND status <> 'deleted'`,
+		  WHERE id = ? AND (sender_user_id = ? OR recipient_user_id = ?)
+		    AND status NOT IN ('deleted', 'expired')`,
 		messageID,
 		userID,
 		userID,
@@ -1317,9 +1634,14 @@ func (s *Server) blobSize(key string) (int64, error) {
 
 func readJSON(w http.ResponseWriter, r *http.Request, target any) bool {
 	defer r.Body.Close()
-	decoder := json.NewDecoder(io.LimitReader(r.Body, 1<<20))
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+	decoder := json.NewDecoder(r.Body)
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(target); err != nil {
+		http.Error(w, "invalid JSON body", http.StatusBadRequest)
+		return false
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
 		http.Error(w, "invalid JSON body", http.StatusBadRequest)
 		return false
 	}

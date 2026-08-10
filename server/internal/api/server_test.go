@@ -132,7 +132,11 @@ func TestRegisterValidatesDevicePublicKeys(t *testing.T) {
 		t.Fatalf("storage.NewLocal() error = %v", err)
 	}
 
-	relay := httptest.NewServer(New(database, blobStore, 7).Handler())
+	relay := httptest.NewServer(NewWithOptions(database, blobStore, Options{
+		RetentionDays:          7,
+		RegistrationRatePerIP:  100,
+		RegistrationRateGlobal: 100,
+	}).Handler())
 	t.Cleanup(relay.Close)
 
 	encodedKey := func(size int) string {
@@ -228,7 +232,11 @@ func TestRegisterValidatesUsernameForIdentityVerification(t *testing.T) {
 		t.Fatalf("storage.NewLocal() error = %v", err)
 	}
 
-	relay := httptest.NewServer(New(database, blobStore, 7).Handler())
+	relay := httptest.NewServer(NewWithOptions(database, blobStore, Options{
+		RetentionDays:          7,
+		RegistrationRatePerIP:  100,
+		RegistrationRateGlobal: 100,
+	}).Handler())
 	t.Cleanup(relay.Close)
 
 	validKey := bytes.Repeat([]byte{0x01}, 32)

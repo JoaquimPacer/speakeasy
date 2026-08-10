@@ -2,11 +2,14 @@ package db
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	_ "modernc.org/sqlite"
 )
@@ -63,7 +66,9 @@ func configure(ctx context.Context, database *sql.DB) error {
 		"PRAGMA foreign_keys = ON",
 		"PRAGMA busy_timeout = 5000",
 		"PRAGMA journal_mode = WAL",
-		"PRAGMA synchronous = NORMAL",
+		// The pending-blob ownership record must survive a host crash before the
+		// registered file is created. FULL keeps that ordering durable in WAL mode.
+		"PRAGMA synchronous = FULL",
 	} {
 		if _, err := database.ExecContext(ctx, statement); err != nil {
 			return fmt.Errorf("configure sqlite: %w", err)
@@ -78,7 +83,84 @@ func migrate(ctx context.Context, database *sql.DB) error {
 			return fmt.Errorf("apply schema: %w", err)
 		}
 	}
+	if err := hashLegacySessionTokens(ctx, database, time.Now().UTC().Truncate(time.Second)); err != nil {
+		return fmt.Errorf("hash legacy session tokens: %w", err)
+	}
 	return nil
+}
+
+const legacySessionGracePeriod = 7 * 24 * time.Hour
+
+type legacySession struct {
+	token     string
+	expiresAt sql.NullString
+}
+
+// hashLegacySessionTokens performs a one-time, transactional in-place
+// conversion. Keeping the existing primary-key column avoids a destructive
+// table rebuild while ensuring it contains only SHA-256 token hashes after the
+// migration commits. A failure rolls every token and expiry change back.
+func hashLegacySessionTokens(ctx context.Context, database *sql.DB, migrationTime time.Time) error {
+	tx, err := database.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	var alreadyApplied int
+	err = tx.QueryRowContext(
+		ctx,
+		`SELECT COUNT(*) FROM schema_migrations WHERE version = 2`,
+	).Scan(&alreadyApplied)
+	if err != nil {
+		return err
+	}
+	if alreadyApplied != 0 {
+		return tx.Commit()
+	}
+
+	rows, err := tx.QueryContext(ctx, `SELECT token, expires_at FROM sessions`)
+	if err != nil {
+		return err
+	}
+	var sessions []legacySession
+	for rows.Next() {
+		var session legacySession
+		if err := rows.Scan(&session.token, &session.expiresAt); err != nil {
+			rows.Close()
+			return err
+		}
+		sessions = append(sessions, session)
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+
+	graceExpiry := migrationTime.Add(legacySessionGracePeriod).Format(time.RFC3339)
+	for _, session := range sessions {
+		tokenDigest := sha256.Sum256([]byte(session.token))
+		expiresAt := graceExpiry
+		if session.expiresAt.Valid && strings.TrimSpace(session.expiresAt.String) != "" {
+			expiresAt = session.expiresAt.String
+		}
+		if _, err := tx.ExecContext(
+			ctx,
+			`UPDATE sessions SET token = ?, expires_at = ? WHERE token = ?`,
+			hex.EncodeToString(tokenDigest[:]),
+			expiresAt,
+			session.token,
+		); err != nil {
+			return err
+		}
+	}
+
+	if _, err := tx.ExecContext(ctx, `INSERT INTO schema_migrations(version) VALUES (2)`); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 var schemaStatements = []string{
@@ -114,10 +196,18 @@ var schemaStatements = []string{
 		created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 	)`,
 	`CREATE TABLE IF NOT EXISTS sessions (
-		token TEXT PRIMARY KEY,
+		token TEXT PRIMARY KEY CHECK (length(token) = 64),
 		user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
 		device_id TEXT NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
-		expires_at TEXT,
+		expires_at TEXT NOT NULL,
+		created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+	)`,
+	`CREATE TABLE IF NOT EXISTS pending_blob_writes (
+		blob_path TEXT PRIMARY KEY,
+		sender_user_id TEXT NOT NULL,
+		recipient_user_id TEXT NOT NULL,
+		blob_size INTEGER NOT NULL CHECK (blob_size >= 0),
+		state TEXT NOT NULL DEFAULT 'pending' CHECK (state IN ('pending', 'cleaning')),
 		created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 	)`,
 	`CREATE TABLE IF NOT EXISTS contacts (
@@ -173,7 +263,12 @@ var schemaStatements = []string{
 		CHECK (blocker_user_id <> blocked_user_id)
 	)`,
 	`CREATE INDEX IF NOT EXISTS idx_devices_user_id ON devices(user_id)`,
+	`CREATE INDEX IF NOT EXISTS idx_auth_challenges_device_expiry ON auth_challenges(device_id, expires_at)`,
 	`CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON sessions(user_id)`,
+	`CREATE INDEX IF NOT EXISTS idx_sessions_expires_at ON sessions(expires_at)`,
+	`CREATE INDEX IF NOT EXISTS idx_pending_blob_writes_state_created ON pending_blob_writes(state, created_at)`,
+	`CREATE INDEX IF NOT EXISTS idx_pending_blob_writes_sender ON pending_blob_writes(sender_user_id)`,
+	`CREATE INDEX IF NOT EXISTS idx_pending_blob_writes_recipient ON pending_blob_writes(recipient_user_id)`,
 	`CREATE INDEX IF NOT EXISTS idx_contacts_contact_user_id ON contacts(contact_user_id)`,
 	`CREATE INDEX IF NOT EXISTS idx_invites_inviter_user_id ON invites(inviter_user_id)`,
 	`CREATE INDEX IF NOT EXISTS idx_invites_status_expires_at ON invites(status, expires_at)`,

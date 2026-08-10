@@ -30,9 +30,13 @@ routing metadata disclosed in the privacy policy.
 - For the next `ITSAppUsesNonExemptEncryption = true` upload, expect `Missing
   Compliance` until Joaquim completes App Store Connect's export-compliance
   questionnaire. Do not invite testers while the answer or Apple review is
-  pending; after clearance, run `bundle exec fastlane verify_beta
-  version:<version> build_number:<build-number>` from `ios/` for that exact
-  upload.
+  pending. After clearance, run the following from `ios/` for that exact upload:
+
+  ```sh
+  KITHRA_INTERNAL_TESTFLIGHT_CONFIRM=I_CONFIRM_INTERNAL_TESTFLIGHT_ACTION \
+    bundle exec fastlane verify_beta \
+      version:<version> build_number:<build-number>
+  ```
 - Confirm an internal or external tester group has the processed build attached.
 - Send tester invites only after the build is visible in the selected group.
 
@@ -60,6 +64,8 @@ To test:
 
 Beta relay URL: `https://api.joaquimpacer.com`
 
-Support URL: `https://kithra.joaquimpacer.com/support.html`
+Proposed support URL (not yet live):
+`https://kithra.jqinnovation.com/support.html`
 
-Privacy Policy URL: `https://kithra.joaquimpacer.com/privacy.html`
+Proposed privacy policy URL (not yet live):
+`https://kithra.jqinnovation.com/privacy.html`

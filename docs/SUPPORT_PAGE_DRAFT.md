@@ -33,4 +33,5 @@ Email: `support@jqinnovation.com`
 
 Security reports: `security@jqinnovation.com`
 
-Privacy Policy: `https://kithra.joaquimpacer.com/privacy.html`
+Proposed privacy policy URL (not yet live):
+`https://kithra.jqinnovation.com/privacy.html`

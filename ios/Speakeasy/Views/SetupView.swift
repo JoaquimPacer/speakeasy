@@ -4,6 +4,7 @@ struct SetupView: View {
     @EnvironmentObject private var appState: AppState
     @State private var relayURLDraft = ""
     @State private var username = ""
+    @State private var showingResetRegistrationConfirmation = false
 
     var body: some View {
         Form {
@@ -12,6 +13,7 @@ struct SetupView: View {
                     .textInputAutocapitalization(.never)
                     .keyboardType(.URL)
                     .autocorrectionDisabled()
+                    .disabled(appState.isAuthenticationBootstrapUncertain)
 
                 Button {
                     Task {
@@ -20,11 +22,51 @@ struct SetupView: View {
                 } label: {
                     Label("Apply", systemImage: "checkmark.circle")
                 }
-                .disabled(appState.isWorking)
+                .disabled(appState.isSetupMutationBlocked)
             }
 
             Section("Device") {
-                if let identity = appState.deviceIdentity {
+                if appState.needsLocalCleanupRetry {
+                    Text("A previously confirmed local reset did not finish. Retry that cleanup before creating or registering a device identity.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                    Button("Retry confirmed local cleanup", role: .destructive) {
+                        Task {
+                            await appState.resetLocalRegistration(
+                                confirmation: .eraseProtectedLocalAccount
+                            )
+                        }
+                    }
+                    .disabled(appState.isWorking)
+                } else if appState.needsAuthenticationStorageReload {
+                    Text("Kithra could not safely reconcile the protected session and pending-registration records. Reloading is non-destructive and never replaces or erases device keys.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                    Button("Reload protected account storage") {
+                        Task {
+                            await appState.retryAuthenticationStorageLoad()
+                        }
+                    }
+                    .disabled(appState.isWorking || appState.isRestoringSession)
+                    Button("Reset this device instead", role: .destructive) {
+                        showingResetRegistrationConfirmation = true
+                    }
+                    .disabled(appState.isWorking || appState.isRestoringSession)
+                } else if appState.needsAuthenticationRecoveryRetry {
+                    Text("Kithra has protected account authority for this exact relay and device, but recovery did not finish. Retry without creating a replacement account or keys.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                    Button("Retry protected account recovery") {
+                        Task {
+                            await appState.retryAuthenticationRecovery()
+                        }
+                    }
+                    .disabled(appState.isWorking || appState.isRestoringSession)
+                    Button("Reset this device instead", role: .destructive) {
+                        showingResetRegistrationConfirmation = true
+                    }
+                    .disabled(appState.isWorking || appState.isRestoringSession)
+                } else if let identity = appState.deviceIdentity {
                     LabeledContent("Device", value: identity.deviceID?.uuidString ?? "Ready")
                     LabeledContent("Encryption key", value: "\(identity.encryptionPublicKey.count) bytes")
                     LabeledContent("Signing key", value: "\(identity.signingPublicKey.count) bytes")
@@ -33,10 +75,7 @@ struct SetupView: View {
                             .font(.footnote)
                             .foregroundStyle(.secondary)
                         Button("Reset local identity", role: .destructive) {
-                            Task {
-                                await appState.resetLocalRegistration()
-                                await appState.prepareLocalIdentity()
-                            }
+                            showingResetRegistrationConfirmation = true
                         }
                         .disabled(appState.isWorking)
                     }
@@ -48,6 +87,7 @@ struct SetupView: View {
                     } label: {
                         Label("Create local keys", systemImage: "key")
                     }
+                    .disabled(appState.isSetupMutationBlocked)
                 }
             }
 
@@ -63,7 +103,10 @@ struct SetupView: View {
                 } label: {
                     Label("Register", systemImage: "person.badge.plus")
                 }
-                .disabled(appState.isWorking || appState.deviceIdentity?.deviceID != nil)
+                .disabled(
+                    appState.isSetupMutationBlocked
+                        || appState.deviceIdentity?.deviceID != nil
+                )
             }
 
             if let error = appState.lastErrorMessage {
@@ -85,8 +128,28 @@ struct SetupView: View {
         .onAppear {
             relayURLDraft = appState.relayBaseURLString
         }
+        .confirmationDialog(
+            "Reset this device's local registration?",
+            isPresented: $showingResetRegistrationConfirmation,
+            titleVisibility: .visible
+        ) {
+            Button("Reset local registration", role: .destructive) {
+                Task {
+                    await appState.resetLocalRegistration(
+                        confirmation: .eraseProtectedLocalAccount
+                    )
+                    if !appState.isAuthenticationBootstrapUncertain {
+                        await appState.prepareLocalIdentity()
+                    }
+                }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This permanently erases this device's protected session, pending registration, verification state, encrypted local media, and device keys. It does not recover an unknown relay response.")
+        }
         .task {
-            if appState.deviceIdentity == nil {
+            if appState.deviceIdentity == nil,
+               !appState.isAuthenticationBootstrapUncertain {
                 await appState.prepareLocalIdentity()
             }
         }

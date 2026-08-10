@@ -37,7 +37,9 @@ An open-source, self-hosted, E2E encrypted async video messaging app. The privat
 ### Why Go (Not Node.js) for the Server
 - **Blob streaming:** Go handles concurrent large file I/O more efficiently than Node
 - **Single binary:** Docker image is ~20MB vs ~200MB+ for Node
-- **Crypto:** `golang.org/x/crypto/nacl` is stdlib-adjacent — no npm dependency tree
+- **Crypto:** the relay performs no message-content cryptography; its only
+  asymmetric operation is standard-library Ed25519 login-proof verification
+  that is wire-compatible with the client's libsodium signature
 - **Simplicity:** The server is a dumb relay. Go's stdlib covers HTTP, WebSocket, and file handling without a framework
 
 ### Encryption
@@ -90,7 +92,11 @@ An open-source, self-hosted, E2E encrypted async video messaging app. The privat
 
 ### Auth
 - `POST /auth/register` — create account (username + device public key)
-- `POST /auth/login` — planned pre-release challenge-response authentication
+- `POST /auth/challenge` — issue a short-lived, single-use device challenge
+- `POST /auth/login` — verify the signed challenge and create an expiring
+  bearer session
+- `POST /auth/logout` — revoke every session and outstanding challenge for the
+  authenticated device
 - `POST /auth/device` — planned later multi-device registration; V1 permits one
   active device per user
 
@@ -99,7 +105,8 @@ An open-source, self-hosted, E2E encrypted async video messaging app. The privat
 - `GET /messages` — list messages for authenticated user
 - `GET /messages/:id` — download encrypted blob
 - `POST /messages/:id/delivered` — acknowledge recipient download verified into local cache; server deletes blob
-- `PATCH /messages/:id/status` — update watched status and other metadata-only states
+- `PATCH /messages/:id/status` — let the recipient mark a locally cached,
+  relay-deleted message watched
 - `DELETE /messages/:id` — delete message
 
 ### Contacts

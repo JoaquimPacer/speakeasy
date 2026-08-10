@@ -126,11 +126,25 @@ final class KeychainDeviceKeyManager: DeviceKeyManaging {
         guard let record = try loadStoredRecord() else {
             throw DeviceKeyManagerError.identityNotFound
         }
+        return try Self.loginChallengeResponse(
+            challenge: challenge,
+            signingPrivateKey: record.signingPrivateKey
+        )
+    }
+
+    static func loginChallengeResponse(
+        challenge: Data,
+        signingPrivateKey: Data
+    ) throws -> Data {
+        guard challenge.count == AuthSessionValidator.loginChallengeByteCount,
+              signingPrivateKey.count == 64 else {
+            throw DeviceKeyManagerError.cryptoOperationFailed("Validating the relay auth challenge")
+        }
         var transcript = Data("KITHRA-LOGIN-CHALLENGE-v1\0".utf8)
         transcript.append(challenge)
-        guard let signature = sodium.sign.signature(
+        guard let signature = Sodium().sign.signature(
             message: Array(transcript),
-            secretKey: Array(record.signingPrivateKey)
+            secretKey: Array(signingPrivateKey)
         ) else {
             throw DeviceKeyManagerError.cryptoOperationFailed("Signing the relay auth challenge")
         }

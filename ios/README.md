@@ -49,9 +49,10 @@ download received ciphertext, verify the encrypted package hash when present,
 save a received encrypted local copy, acknowledge relay deletion, and decrypt a
 short-lived playback file. Outgoing envelopes include a sender-sealed content
 key so sent local history can also be played without exposing plaintext to the
-relay.
+relay. Relay bearer authority is stored in a device-bound Keychain item, and an
+existing device renews an expired or rejected session by signing a short-lived,
+single-use relay challenge. Release builds accept only HTTPS relay URLs.
 
-Still pending: expiring challenge-response re-authentication, persistent local
-message/cache indexing, APNs push, and a signed public-eligible candidate plus
-its two-iPhone smoke test. Earlier internal signing/upload checks do not satisfy
-that release-candidate gate.
+Still pending: persistent local message/cache indexing, APNs push, and a signed
+public-eligible candidate plus its two-iPhone smoke test. Earlier internal
+signing/upload checks do not satisfy that release-candidate gate.

@@ -208,7 +208,9 @@ struct SettingsStorageView: View {
         ) {
             Button("Reset local registration", role: .destructive) {
                 Task {
-                    await appState.resetLocalRegistration()
+                    await appState.resetLocalRegistration(
+                        confirmation: .eraseProtectedLocalAccount
+                    )
                 }
             }
             Button("Cancel", role: .cancel) {}

@@ -5,11 +5,13 @@ import UIKit
 
 struct ConversationTimelineView: View {
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.scenePhase) private var scenePhase
     @EnvironmentObject private var appState: AppState
     @StateObject private var recorder = InlineVideoRecorder()
     @State private var inlinePlayback: InlinePlayback?
     @State private var selectedMessageID: UUID?
     @State private var showingContactSecurity = false
+    @State private var playbackRequestID: UUID?
 
     let contact: Contact
 
@@ -62,14 +64,42 @@ struct ConversationTimelineView: View {
         .toolbar(.hidden, for: .navigationBar)
         .toolbar(.hidden, for: .tabBar)
         .onAppear {
-            recorder.onFinishedRecording = { url in
-                sendRecordedVideo(url)
+            recorder.onFinishedRecording = { url, releaseOwnership in
+                sendRecordedVideo(url, releaseOwnership: releaseOwnership)
             }
-            recorder.prepare()
+            if scenePhase == .active {
+                recorder.prepare()
+            }
         }
         .onDisappear {
             recorder.stopSession()
             clearInlinePlayback()
+        }
+        .onChange(of: scenePhase) { newPhase in
+            switch newPhase {
+            case .active:
+                recorder.prepare()
+            case .inactive, .background:
+                // Mark the current recording generation discarded before the
+                // capture queue can start or finish another segment.
+                recorder.stopSession()
+                clearInlinePlayback()
+            @unknown default:
+                recorder.stopSession()
+                clearInlinePlayback()
+            }
+        }
+        .onChange(of: appState.activePlaybackFile?.id) { activePlaybackID in
+            guard let inlinePlayback,
+                  inlinePlayback.file.id != activePlaybackID else {
+                return
+            }
+            self.inlinePlayback = nil
+            selectedMessageID = nil
+            playbackRequestID = nil
+            if scenePhase == .active {
+                recorder.prepare()
+            }
         }
         .task(id: contact.id) {
             await appState.refreshQuietly()
@@ -353,10 +383,17 @@ struct ConversationTimelineView: View {
         return "\(prefix) \(latest.createdAt.relativeShortDisplay)"
     }
 
-    private func sendRecordedVideo(_ url: URL) {
+    private func sendRecordedVideo(
+        _ url: URL,
+        releaseOwnership: @escaping () -> Void
+    ) {
         Task {
-            await appState.sendVideo(rawVideoURL: url, quality: .compact480p, to: currentContact)
-            await appState.mediaPipeline.cleanupTemporaryFiles([url])
+            await appState.sendVideo(
+                rawVideoURL: url,
+                quality: .compact480p,
+                to: currentContact,
+                onPlaintextOwnershipAccepted: releaseOwnership
+            )
             await appState.refreshQuietly()
         }
     }
@@ -380,8 +417,25 @@ struct ConversationTimelineView: View {
     }
 
     private func play(_ message: Message) {
+        let requestID = UUID()
+        playbackRequestID = requestID
+        inlinePlayback = nil
+        selectedMessageID = nil
         Task {
+            await appState.discardActivePlaybackFile()
+            guard playbackRequestID == requestID else {
+                return
+            }
             guard let playbackFile = await appState.preparePlayback(message: message) else {
+                return
+            }
+            guard playbackRequestID == requestID,
+                  appState.activePlaybackFile?.id == playbackFile.id else {
+                if appState.activePlaybackFile?.id == playbackFile.id {
+                    await appState.discardActivePlaybackFile()
+                } else {
+                    await appState.mediaPipeline.cleanupTemporaryFiles([playbackFile.url])
+                }
                 return
             }
             selectedMessageID = message.id
@@ -404,10 +458,7 @@ struct ConversationTimelineView: View {
     }
 
     private func clearInlinePlayback() {
-        guard inlinePlayback != nil || selectedMessageID != nil else {
-            return
-        }
-
+        playbackRequestID = nil
         inlinePlayback = nil
         selectedMessageID = nil
         Task {
@@ -472,9 +523,149 @@ private final class PreviewView: UIView {
     }
 }
 
+/// Tracks each inline capture from the user's tap through AVFoundation's
+/// asynchronous start/finish callbacks and any segment merge. A background
+/// discard is generation based, so even a callback that arrives after the app
+/// leaves the foreground cannot publish its plaintext output.
+struct InlineRecordingInvalidation {
+    let generation: UInt64
+    let outputURLs: [URL]
+}
+
+final class InlineRecordingLifecycle: @unchecked Sendable {
+    private let lock = NSLock()
+    private var nextGeneration: UInt64 = 0
+    private var activeGeneration: UInt64?
+    private var discardedGenerations: Set<UInt64> = []
+    private var generationByOutputPath: [String: UInt64] = [:]
+    private var outputURLsByGeneration: [UInt64: [String: URL]] = [:]
+    private var cancellationsByGeneration: [UInt64: [UUID: @Sendable () -> Void]] = [:]
+
+    func begin() -> UInt64 {
+        lock.lock()
+        defer { lock.unlock() }
+        nextGeneration &+= 1
+        activeGeneration = nextGeneration
+        discardedGenerations.remove(nextGeneration)
+        return nextGeneration
+    }
+
+    @discardableResult
+    func registerOutput(_ url: URL, generation: UInt64) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard activeGeneration == generation,
+              !discardedGenerations.contains(generation) else {
+            return false
+        }
+        let canonicalURL = url.standardizedFileURL
+        generationByOutputPath[canonicalURL.path] = generation
+        outputURLsByGeneration[generation, default: [:]][canonicalURL.path] = canonicalURL
+        return true
+    }
+
+    func generation(for url: URL) -> UInt64? {
+        lock.lock()
+        defer { lock.unlock() }
+        return generationByOutputPath[url.standardizedFileURL.path]
+    }
+
+    var currentGeneration: UInt64? {
+        lock.lock()
+        defer { lock.unlock() }
+        return activeGeneration
+    }
+
+    func takeGeneration(for url: URL) -> UInt64? {
+        lock.lock()
+        defer { lock.unlock() }
+        return generationByOutputPath.removeValue(
+            forKey: url.standardizedFileURL.path
+        )
+    }
+
+    func beginOperation(
+        outputURL: URL,
+        generation: UInt64,
+        cancellation: @escaping @Sendable () -> Void
+    ) -> UUID? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard activeGeneration == generation,
+              !discardedGenerations.contains(generation) else {
+            return nil
+        }
+        let canonicalURL = outputURL.standardizedFileURL
+        outputURLsByGeneration[generation, default: [:]][canonicalURL.path] = canonicalURL
+        let operationID = UUID()
+        cancellationsByGeneration[generation, default: [:]][operationID] = cancellation
+        return operationID
+    }
+
+    func finishOperation(_ operationID: UUID, generation: UInt64) {
+        lock.lock()
+        cancellationsByGeneration[generation]?[operationID] = nil
+        lock.unlock()
+    }
+
+    func startOperation(
+        _ operationID: UUID,
+        generation: UInt64,
+        start: () -> Void
+    ) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard activeGeneration == generation,
+              !discardedGenerations.contains(generation),
+              cancellationsByGeneration[generation]?[operationID] != nil else {
+            return false
+        }
+        start()
+        return true
+    }
+
+    @discardableResult
+    func discardActive() -> InlineRecordingInvalidation? {
+        lock.lock()
+        guard let activeGeneration else {
+            lock.unlock()
+            return nil
+        }
+        discardedGenerations.insert(activeGeneration)
+        let outputURLs = Array(outputURLsByGeneration[activeGeneration, default: [:]].values)
+        let cancellations = Array(cancellationsByGeneration[activeGeneration, default: [:]].values)
+        cancellationsByGeneration[activeGeneration] = [:]
+        lock.unlock()
+
+        cancellations.forEach { $0() }
+        return InlineRecordingInvalidation(
+            generation: activeGeneration,
+            outputURLs: outputURLs
+        )
+    }
+
+    func isDiscarded(_ generation: UInt64) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return discardedGenerations.contains(generation)
+    }
+
+    func complete(_ generation: UInt64) {
+        lock.lock()
+        if activeGeneration == generation {
+            activeGeneration = nil
+        }
+        discardedGenerations.remove(generation)
+        generationByOutputPath = generationByOutputPath.filter { $0.value != generation }
+        outputURLsByGeneration[generation] = nil
+        cancellationsByGeneration[generation] = nil
+        lock.unlock()
+    }
+}
+
 private final class InlineVideoRecorder: NSObject, ObservableObject, AVCaptureFileOutputRecordingDelegate, @unchecked Sendable {
     let session = AVCaptureSession()
-    var onFinishedRecording: ((URL) -> Void)?
+    var onFinishedRecording: ((URL, @escaping () -> Void) -> Void)?
 
     @Published private(set) var canFlipCamera = false
     @Published private(set) var errorMessage: String?
@@ -492,6 +683,9 @@ private final class InlineVideoRecorder: NSObject, ObservableObject, AVCaptureFi
     private var isStoppingForFinalSend = false
     private var isSwitchingCameraDuringRecording = false
     private var segmentURLs: [URL] = []
+    private var durationBudget = RecordingDurationBudget()
+    private let plaintextTempJanitor = KithraPlaintextTempFileJanitor.shared
+    private let recordingLifecycle = InlineRecordingLifecycle()
 
     func prepare() {
         guard !didConfigureSession else {
@@ -557,7 +751,12 @@ private final class InlineVideoRecorder: NSObject, ObservableObject, AVCaptureFi
     }
 
     func stopSession() {
-        isDiscardingRecording = isRecording
+        let invalidation = recordingLifecycle.discardActive()
+        isDiscardingRecording = invalidation != nil
+        isRecording = false
+        if let invalidation {
+            Self.cleanupRecordingFiles(invalidation.outputURLs)
+        }
         sessionQueue.async { [weak self] in
             guard let self else { return }
 
@@ -578,7 +777,9 @@ private final class InlineVideoRecorder: NSObject, ObservableObject, AVCaptureFi
     }
 
     private func startRecordingSession() {
-        guard isReady, !movieOutput.isRecording else {
+        guard isReady,
+              !movieOutput.isRecording,
+              recordingLifecycle.currentGeneration == nil else {
             return
         }
 
@@ -587,21 +788,56 @@ private final class InlineVideoRecorder: NSObject, ObservableObject, AVCaptureFi
         isStoppingForFinalSend = false
         isSwitchingCameraDuringRecording = false
         for staleSegmentURL in segmentURLs {
-            try? FileManager.default.removeItem(at: staleSegmentURL)
+            Self.cleanupRecordingFiles([staleSegmentURL])
         }
         segmentURLs.removeAll()
-        startRecordingSegment()
+        durationBudget.reset()
+        let generation = recordingLifecycle.begin()
+        // Establish intent before dispatching startRecording. Backgrounding in
+        // this window must mark the generation discarded even if AVFoundation
+        // has not delivered didStartRecording yet.
+        isRecording = true
+        startRecordingSegment(generation: generation)
     }
 
-    private func startRecordingSegment() {
+    private func startRecordingSegment(generation: UInt64) {
+        let remainingDuration = durationBudget.remainingSeconds
+        guard remainingDuration > 0 else {
+            finishRecordedSegments(generation: generation)
+            return
+        }
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("kithra-inline-\(UUID().uuidString)")
             .appendingPathExtension("mov")
+        plaintextTempJanitor.preserveWhileInUse(url)
+        guard recordingLifecycle.registerOutput(url, generation: generation) else {
+            Self.cleanupRecordingFiles([url])
+            resetRecordingState(completing: generation)
+            return
+        }
 
         sessionQueue.async { [weak self] in
-            guard let self, !self.movieOutput.isRecording else { return }
+            guard let self else {
+                Self.cleanupRecordingFiles([url])
+                return
+            }
+            guard !self.recordingLifecycle.isDiscarded(generation),
+                  !self.movieOutput.isRecording else {
+                _ = self.recordingLifecycle.takeGeneration(for: url)
+                Self.cleanupRecordingFiles([url])
+                if self.recordingLifecycle.isDiscarded(generation) {
+                    self.updateOnMain {
+                        self.resetRecordingState(completing: generation)
+                    }
+                }
+                return
+            }
 
             self.applyVideoConnectionSettings()
+            self.movieOutput.maxRecordedDuration = CMTime(
+                seconds: remainingDuration,
+                preferredTimescale: 600
+            )
             self.movieOutput.startRecording(to: url, recordingDelegate: self)
         }
     }
@@ -614,8 +850,8 @@ private final class InlineVideoRecorder: NSObject, ObservableObject, AVCaptureFi
             guard let self else { return }
             if self.movieOutput.isRecording {
                 self.movieOutput.stopRecording()
-            } else {
-                self.finishRecordedSegments()
+            } else if let generation = self.recordingLifecycle.currentGeneration {
+                self.finishRecordedSegments(generation: generation)
             }
         }
     }
@@ -755,17 +991,22 @@ private final class InlineVideoRecorder: NSObject, ObservableObject, AVCaptureFi
             self.switchCamera {
                 self.isSwitchingCameraDuringRecording = false
                 if self.isDiscardingRecording {
-                    self.resetRecordingState()
+                    self.resetRecordingState(
+                        completing: self.recordingLifecycle.currentGeneration
+                    )
                 } else if self.isStoppingForFinalSend {
-                    self.finishRecordedSegments()
-                } else if self.isRecording {
-                    self.startRecordingSegment()
+                    if let generation = self.recordingLifecycle.currentGeneration {
+                        self.finishRecordedSegments(generation: generation)
+                    }
+                } else if self.isRecording,
+                          let generation = self.recordingLifecycle.currentGeneration {
+                    self.startRecordingSegment(generation: generation)
                 }
             }
         }
     }
 
-    private func finishRecordedSegments() {
+    private func finishRecordedSegments(generation: UInt64) {
         updateOnMain {
             let segments = self.segmentURLs
             self.segmentURLs.removeAll()
@@ -776,26 +1017,51 @@ private final class InlineVideoRecorder: NSObject, ObservableObject, AVCaptureFi
 
             Task { [weak self] in
                 do {
-                    let outputURL = try await Self.combineSegments(segments)
+                    guard let self else {
+                        Self.cleanupRecordingFiles(segments)
+                        return
+                    }
+                    let outputURL = try await Self.combineSegments(
+                        segments,
+                        generation: generation,
+                        lifecycle: self.recordingLifecycle
+                    )
                     DispatchQueue.main.async { [weak self] in
-                        guard let self, let onFinishedRecording = self.onFinishedRecording else {
-                            try? FileManager.default.removeItem(at: outputURL)
+                        guard let self else {
+                            Self.cleanupRecordingFiles([outputURL])
+                            return
+                        }
+                        guard let onFinishedRecording = self.onFinishedRecording else {
+                            Self.cleanupRecordingFiles([outputURL])
+                            self.resetRecordingState(completing: generation)
+                            return
+                        }
+                        guard !self.recordingLifecycle.isDiscarded(generation) else {
+                            Self.cleanupRecordingFiles([outputURL])
+                            self.resetRecordingState(completing: generation)
                             return
                         }
                         self.statusText = "Ready"
-                        onFinishedRecording(outputURL)
+                        onFinishedRecording(outputURL) { [weak self] in
+                            self?.recordingLifecycle.complete(generation)
+                        }
                     }
                 } catch {
+                    let wasDiscarded = self?.recordingLifecycle.isDiscarded(generation) ?? true
                     DispatchQueue.main.async { [weak self] in
-                        self?.errorMessage = error.localizedDescription
-                        self?.statusText = "Ready"
+                        guard let self else { return }
+                        self.recordingLifecycle.complete(generation)
+                        if !wasDiscarded {
+                            self.errorMessage = error.localizedDescription
+                        }
+                        self.statusText = "Ready"
                     }
                 }
             }
         }
     }
 
-    private func resetRecordingState() {
+    private func resetRecordingState(completing generation: UInt64? = nil) {
         let cleanupURLs = segmentURLs
         segmentURLs.removeAll()
         isDiscardingRecording = false
@@ -803,22 +1069,33 @@ private final class InlineVideoRecorder: NSObject, ObservableObject, AVCaptureFi
         isSwitchingCameraDuringRecording = false
         isRecording = false
         statusText = "Ready"
-        for cleanupURL in cleanupURLs {
-            try? FileManager.default.removeItem(at: cleanupURL)
+        durationBudget.reset()
+        Self.cleanupRecordingFiles(cleanupURLs)
+        if let generation {
+            recordingLifecycle.complete(generation)
         }
     }
 
-    private static func combineSegments(_ segments: [URL]) async throws -> URL {
+    private static func combineSegments(
+        _ segments: [URL],
+        generation: UInt64,
+        lifecycle: InlineRecordingLifecycle
+    ) async throws -> URL {
         guard let firstSegment = segments.first else {
             throw MediaPipelineError.exportFailed
         }
         guard segments.count > 1 else {
+            guard !lifecycle.isDiscarded(generation) else {
+                cleanupRecordingFiles([firstSegment])
+                throw MediaPipelineError.plaintextProductionInvalidated
+            }
             return firstSegment
         }
 
         let outputURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("kithra-inline-merged-\(UUID().uuidString)")
             .appendingPathExtension("mov")
+        KithraPlaintextTempFileJanitor.shared.preserveWhileInUse(outputURL)
 
         do {
             let sourceSegments = try segments.map { segmentURL in
@@ -894,31 +1171,64 @@ private final class InlineVideoRecorder: NSObject, ObservableObject, AVCaptureFi
             videoComposition.instructions = instructions
             exportBox.session.videoComposition = videoComposition
 
+            guard let operationID = lifecycle.beginOperation(
+                outputURL: outputURL,
+                generation: generation,
+                cancellation: { exportBox.session.cancelExport() }
+            ) else {
+                exportBox.session.cancelExport()
+                cleanupRecordingFiles(segments + [outputURL])
+                throw MediaPipelineError.plaintextProductionInvalidated
+            }
+
             return try await withCheckedThrowingContinuation { continuation in
-                exportBox.session.exportAsynchronously {
-                    switch exportBox.session.status {
-                    case .completed:
-                        do {
-                            try FileManager.default.setAttributes(
-                                [.protectionKey: FileProtectionType.complete],
-                                ofItemAtPath: outputURL.path
-                            )
-                            cleanupRecordingFiles(segments)
-                            continuation.resume(returning: outputURL)
-                        } catch {
+                let didStart = lifecycle.startOperation(
+                    operationID,
+                    generation: generation
+                ) {
+                    exportBox.session.exportAsynchronously {
+                        lifecycle.finishOperation(operationID, generation: generation)
+                        guard !lifecycle.isDiscarded(generation) else {
                             cleanupRecordingFiles(segments + [outputURL])
-                            continuation.resume(throwing: error)
+                            continuation.resume(
+                                throwing: MediaPipelineError.plaintextProductionInvalidated
+                            )
+                            return
                         }
-                    case .cancelled:
-                        cleanupRecordingFiles(segments + [outputURL])
-                        continuation.resume(throwing: MediaPipelineError.exportCancelled)
-                    case .failed:
-                        cleanupRecordingFiles(segments + [outputURL])
-                        continuation.resume(throwing: exportBox.session.error ?? MediaPipelineError.exportFailed)
-                    default:
-                        cleanupRecordingFiles(segments + [outputURL])
-                        continuation.resume(throwing: MediaPipelineError.exportFailed)
+                        switch exportBox.session.status {
+                        case .completed:
+                            do {
+                                try FileManager.default.setAttributes(
+                                    [.protectionKey: FileProtectionType.complete],
+                                    ofItemAtPath: outputURL.path
+                                )
+                                cleanupRecordingFiles(segments)
+                                continuation.resume(returning: outputURL)
+                            } catch {
+                                cleanupRecordingFiles(segments + [outputURL])
+                                continuation.resume(throwing: error)
+                            }
+                        case .cancelled:
+                            cleanupRecordingFiles(segments + [outputURL])
+                            continuation.resume(throwing: MediaPipelineError.exportCancelled)
+                        case .failed:
+                            cleanupRecordingFiles(segments + [outputURL])
+                            continuation.resume(
+                                throwing: exportBox.session.error ?? MediaPipelineError.exportFailed
+                            )
+                        default:
+                            cleanupRecordingFiles(segments + [outputURL])
+                            continuation.resume(throwing: MediaPipelineError.exportFailed)
+                        }
                     }
+                }
+                guard didStart else {
+                    lifecycle.finishOperation(operationID, generation: generation)
+                    cleanupRecordingFiles(segments + [outputURL])
+                    continuation.resume(
+                        throwing: MediaPipelineError.plaintextProductionInvalidated
+                    )
+                    return
                 }
             }
         } catch {
@@ -928,8 +1238,28 @@ private final class InlineVideoRecorder: NSObject, ObservableObject, AVCaptureFi
     }
 
     private static func cleanupRecordingFiles(_ urls: [URL]) {
-        for url in urls where FileManager.default.fileExists(atPath: url.path) {
-            try? FileManager.default.removeItem(at: url)
+        for url in urls {
+            let canonicalURL = url.standardizedFileURL
+            guard KithraPlaintextTempFileJanitor.ownsInlineRecordingFile(
+                canonicalURL,
+                applicationTemporaryRoot: FileManager.default.temporaryDirectory
+            ) else {
+                assertionFailure("Refusing to delete an unowned recording path: \(canonicalURL.path)")
+                continue
+            }
+            KithraPlaintextTempFileJanitor.shared.release(canonicalURL)
+            if FileManager.default.fileExists(atPath: canonicalURL.path) {
+                let values = try? canonicalURL.resourceValues(forKeys: [
+                    .isRegularFileKey,
+                    .isSymbolicLinkKey
+                ])
+                guard values?.isRegularFile == true,
+                      values?.isSymbolicLink != true else {
+                    assertionFailure("Refusing to delete non-regular recording media")
+                    continue
+                }
+                try? FileManager.default.removeItem(at: canonicalURL)
+            }
         }
     }
 
@@ -1003,7 +1333,17 @@ private final class InlineVideoRecorder: NSObject, ObservableObject, AVCaptureFi
         didStartRecordingTo fileURL: URL,
         from connections: [AVCaptureConnection]
     ) {
+        guard let generation = recordingLifecycle.generation(for: fileURL),
+              !recordingLifecycle.isDiscarded(generation) else {
+            if movieOutput.isRecording {
+                movieOutput.stopRecording()
+            }
+            return
+        }
         updateOnMain {
+            guard !self.recordingLifecycle.isDiscarded(generation) else {
+                return
+            }
             self.errorMessage = nil
             self.isRecording = true
             self.statusText = "Recording"
@@ -1016,10 +1356,24 @@ private final class InlineVideoRecorder: NSObject, ObservableObject, AVCaptureFi
         from connections: [AVCaptureConnection],
         error: Error?
     ) {
-        let shouldDiscard = isDiscardingRecording
+        let generation = recordingLifecycle.takeGeneration(for: outputFileURL)
+        let shouldDiscard = generation.map(recordingLifecycle.isDiscarded) ?? true
         let shouldResumeAfterFlip = isSwitchingCameraDuringRecording && !shouldDiscard
         let shouldFinishForSend = isStoppingForFinalSend && !shouldDiscard
         var recordingError: String?
+
+        if shouldDiscard {
+            // AVFoundation may recreate/finish the file after stopSession's
+            // early unlink. Remove it directly on the delegate callback before
+            // dispatching any UI reset that might be suspended in background.
+            Self.cleanupRecordingFiles([outputFileURL])
+            updateOnMain {
+                self.resetRecordingState(
+                    completing: generation ?? self.recordingLifecycle.currentGeneration
+                )
+            }
+            return
+        }
 
         if let error {
             let nsError = error as NSError
@@ -1040,8 +1394,11 @@ private final class InlineVideoRecorder: NSObject, ObservableObject, AVCaptureFi
             }
         }
         if recordingError != nil {
-            try? FileManager.default.removeItem(at: outputFileURL)
+            Self.cleanupRecordingFiles([outputFileURL])
         }
+        let segmentDuration = recordingError == nil
+            ? CMTimeGetSeconds(AVURLAsset(url: outputFileURL).duration)
+            : 0
 
         updateOnMain {
             if let recordingError {
@@ -1049,26 +1406,32 @@ private final class InlineVideoRecorder: NSObject, ObservableObject, AVCaptureFi
                 if shouldResumeAfterFlip {
                     self.resumeAfterCameraFlip()
                 } else {
-                    self.resetRecordingState()
+                    self.resetRecordingState(
+                        completing: generation ?? self.recordingLifecycle.currentGeneration
+                    )
                 }
                 return
             }
 
-            if shouldDiscard {
-                self.segmentURLs.append(outputFileURL)
-                self.resetRecordingState()
-                return
-            }
-
             self.segmentURLs.append(outputFileURL)
+            self.durationBudget.includeSegment(durationSeconds: segmentDuration)
+            let durationLimitReached = self.durationBudget.remainingSeconds <= 0.05
 
-            if shouldResumeAfterFlip {
+            if shouldResumeAfterFlip && !durationLimitReached {
                 self.statusText = "Switching camera"
                 self.resumeAfterCameraFlip()
             } else if shouldFinishForSend {
-                self.finishRecordedSegments()
+                if let generation {
+                    self.finishRecordedSegments(generation: generation)
+                } else {
+                    self.resetRecordingState()
+                }
             } else {
-                self.finishRecordedSegments()
+                if let generation {
+                    self.finishRecordedSegments(generation: generation)
+                } else {
+                    self.resetRecordingState()
+                }
             }
         }
     }

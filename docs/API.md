@@ -13,8 +13,9 @@ attachments.
 - Timestamps are RFC 3339 strings.
 - Binary keys and envelope fields are standard base64 strings in JSON. This
   matches Swift `Data` and Go `[]byte` JSON defaults.
-- Authentication is device-token based for the first scaffold and must move to
-  challenge-response before public beta.
+- Registration returns an expiring bearer session. Existing devices renew an
+  expired or rejected session by signing a single-use relay challenge with the
+  device signing key; the private key never leaves the client.
 - Each device has separate public keys:
   - `encryptionPublicKey` for message content-key wrapping.
   - `signingPublicKey` for authentication challenges, signed contact-verification
@@ -55,9 +56,68 @@ Response:
     "signingPublicKey": "base64-ed25519-public-key",
     "createdAt": "2026-05-14T00:00:00Z"
   },
-  "bearerToken": "development-token"
+  "bearerToken": "opaque-random-token",
+  "expiresAt": "2026-06-13T00:00:00Z"
 }
 ```
+
+The default session lifetime is 30 days and is deployment-configurable. The
+response is sent with `Cache-Control: no-store`.
+
+### `POST /auth/challenge`
+
+Requests a short-lived challenge for an already registered device.
+
+Request:
+
+```json
+{
+  "username": "alex",
+  "deviceID": "uuid"
+}
+```
+
+Response:
+
+```json
+{
+  "challengeID": "uuid",
+  "challenge": "base64-32-random-bytes",
+  "expiresAt": "2026-05-14T00:05:00Z"
+}
+```
+
+Challenges expire after five minutes by default, are single-use, and are sent
+with `Cache-Control: no-store`.
+
+### `POST /auth/login`
+
+The device signs the exact byte transcript
+`KITHRA-LOGIN-CHALLENGE-v1\0 || challenge` with its registered Ed25519 signing
+key. No textual, JSON, base64, hashing, or Unicode transformation is applied to
+that transcript.
+
+Request:
+
+```json
+{
+  "username": "alex",
+  "deviceID": "uuid",
+  "challengeID": "uuid",
+  "challengeResponse": "base64-64-byte-ed25519-signature"
+}
+```
+
+The response has the same `user`, `device`, `bearerToken`, and `expiresAt`
+shape as registration. Challenge redemption and session creation are atomic;
+replay, expiry, identity mismatch, or an invalid proof fails with HTTP 401.
+
+### `POST /auth/logout`
+
+Revokes every bearer session and outstanding login challenge for the
+authenticated device and returns HTTP 204. It does not delete the device
+identity or affect another device record. V1 permits one active device per
+user.
 
 ## Contacts
 
@@ -93,6 +153,7 @@ Response:
   "contactID": "uuid",
   "username": "alex",
   "nickname": "",
+  "deviceID": "uuid",
   "encryptionPublicKey": "base64-x25519-public-key",
   "signingPublicKey": "base64-ed25519-public-key",
   "createdAt": "2026-05-14T00:00:00Z"
@@ -166,6 +227,11 @@ rejected. Version 2 uses exact UTC whole-second `createdAt`; bounded nonempty
 MIME/fingerprint/thumbnail-path strings; finite nonnegative duration; and the
 fixed binary sizes documented in the protocol.
 
+The public-release relay defaults to a 64 MiB encrypted-blob limit. It verifies
+the actual multipart file size against `blobSize` before inserting metadata and
+applies per-account and global pending-message/storage quotas. A quota failure
+returns HTTP 507; request-rate failures return HTTP 429 with `Retry-After`.
+
 Response:
 
 ```json
@@ -207,7 +273,9 @@ Response:
 
 ### `PATCH /messages/{messageId}/status`
 
-Updates metadata-only status such as `watched`.
+Lets only the recipient mark a message `watched`. The message must already be
+`delivered` and its relay ciphertext blob must have been deleted. Repeating the
+same update is idempotent.
 
 Request:
 

@@ -6,55 +6,82 @@ struct RootView: View {
     @State private var selectedTab: AppTab = .videos
 
     var body: some View {
-        if appState.currentUser == nil {
-            NavigationStack {
-                SetupView()
-            }
-        } else {
-            TabView(selection: $selectedTab) {
+        Group {
+            if appState.isRestoringSession {
+                ProgressView("Restoring protected session")
+            } else if appState.currentUser == nil {
                 NavigationStack {
-                    ConversationListView()
+                    SetupView()
                 }
-                .tabItem {
-                    Label("Videos", systemImage: "video.fill")
-                }
-                .tag(AppTab.videos)
-
-                NavigationStack {
-                    SettingsStorageView {
-                        selectedTab = .videos
+            } else {
+                TabView(selection: $selectedTab) {
+                    NavigationStack {
+                        ConversationListView()
                     }
+                    .tabItem {
+                        Label("Videos", systemImage: "video.fill")
+                    }
+                    .tag(AppTab.videos)
+
+                    NavigationStack {
+                        SettingsStorageView {
+                            selectedTab = .videos
+                        }
+                    }
+                    .tabItem {
+                        Label("Settings", systemImage: "gearshape.fill")
+                    }
+                    .tag(AppTab.settings)
                 }
-                .tabItem {
-                    Label("Settings", systemImage: "gearshape.fill")
+                .task(id: appState.currentUser?.id) {
+                    guard appState.currentUser != nil,
+                          scenePhase == .active else {
+                        appState.stopRemotePolling()
+                        return
+                    }
+                    appState.startRemotePolling()
+                    await appState.refreshQuietly()
                 }
-                .tag(AppTab.settings)
             }
-            .task(id: appState.currentUser?.id) {
+        }
+        .task {
+            if scenePhase == .active {
+                appState.resumePlaintextProductionAfterBecomingActive()
+            } else {
+                appState.invalidatePlaintextProductionForBackground()
+            }
+            await appState.cleanupInvalidatedPlaintextFiles()
+            await appState.mediaPipeline.cleanupAbandonedPlaintextTemporaryFiles()
+        }
+        .onChange(of: scenePhase) { newPhase in
+            switch newPhase {
+            case .active:
+                appState.resumePlaintextProductionAfterBecomingActive()
+                Task {
+                    await appState.cleanupInvalidatedPlaintextFiles()
+                }
                 guard appState.currentUser != nil else {
-                    appState.stopRemotePolling()
                     return
                 }
                 appState.startRemotePolling()
-                await appState.refreshQuietly()
-            }
-            .onChange(of: scenePhase) { newPhase in
-                switch newPhase {
-                case .active:
-                    appState.startRemotePolling()
-                    Task {
-                        await appState.refreshQuietly()
-                    }
-                case .background:
-                    appState.stopRemotePolling()
-                    Task {
-                        await appState.discardActivePlaybackFile()
-                    }
-                case .inactive:
-                    break
-                @unknown default:
-                    break
+                Task {
+                    await appState.refreshQuietly()
                 }
+            case .inactive:
+                appState.stopRemotePolling()
+                appState.invalidatePlaintextProductionForBackground()
+                Task {
+                    await appState.cleanupInvalidatedPlaintextFiles()
+                }
+            case .background:
+                appState.stopRemotePolling()
+                appState.invalidatePlaintextProductionForBackground()
+                Task {
+                    await appState.cleanupInvalidatedPlaintextFiles()
+                    await appState.mediaPipeline.cleanupAbandonedPlaintextTemporaryFiles()
+                }
+            @unknown default:
+                break
             }
         }
     }

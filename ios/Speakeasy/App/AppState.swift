@@ -3,9 +3,9 @@ import SwiftUI
 
 @MainActor
 final class AppState: ObservableObject {
-    private static let persistedSessionKey = "speakeasy.authSession.v1"
-    private static let installMarkerKey = "speakeasy.installMarker.v1"
+    private static let relayBaseURLKey = "speakeasy.relayBaseURL.v1"
     private static let localDefaultRelayURL = URL(string: "http://localhost:8080")!
+    private static let publicDefaultRelayURL = URL(string: "https://api.joaquimpacer.com")!
 
     @Published var relayBaseURLString: String
     @Published var currentUser: SpeakeasyUser?
@@ -18,22 +18,55 @@ final class AppState: ObservableObject {
     @Published var lastErrorMessage: String?
     @Published var activePlaybackFile: PlaybackTempFile?
     @Published var isWorking = false
+    @Published private(set) var needsLocalCleanupRetry = false
+    @Published private(set) var needsAuthenticationStorageReload = false
+    @Published private(set) var needsAuthenticationRecoveryRetry = false
+    @Published private(set) var isRestoringSession = false
+    @Published private(set) var isRegistrationInFlight = false
 
     let apiClient: SpeakeasyAPIClient
     let keyManager: DeviceKeyManaging
     let mediaPipeline: MediaPipelining
     let contactTrustStore: ContactTrustStoring
     let messageReplayStore: MessageReplayStoring
+    private let sessionStore: AuthSessionStoring
+    private let pendingRegistrationStore: PendingRegistrationStoring
+    private let preferences: UserDefaults
+    private let bootstrapMarkers: LocalAccountBootstrapMarkers
     private let messageAuthenticator: MessageEnvelopeAuthenticator
     private var isRefreshingQuietly = false
     private var localEncryptedPackageURLs: [LocalEncryptedMediaIdentifier: URL] = [:]
     private var localThumbnailURLs: [AuthenticatedThumbnailIdentifier: URL] = [:]
     private var remotePollingTask: Task<Void, Never>?
     private var playbackCleanupTask: Task<Void, Never>?
+    private var playbackPreparationGeneration: UInt64 = 0
+    private var playbackPreparationPermits: [UUID: PlaybackPreparationPermit] = [:]
+    private var allowsPlaybackPreparation = false
+    private var plaintextProductionGeneration: UInt64 = 0
+    private var plaintextProductionPermits: [UUID: ForegroundPlaintextPermit] = [:]
+    private var allowsPlaintextProduction = false
+    private var invalidatedPlaintextURLsPendingCleanup: [URL] = []
     private var requiresFreshInstallKeychainReset: Bool
     private var activeIncomingReceiptOperations: Set<IncomingReceiptOperationKey> = []
     private var isClearingLocalAccountState = false
     private var accountStateGeneration: UInt64 = 0
+    private var storedAuthSession: StoredAuthSession?
+    private var pendingRegistration: PendingRegistrationRecord?
+    private var sessionRenewalTask: Task<AuthSession, Error>?
+    private var registrationTask: Task<Void, Never>?
+    private var registrationAttemptID: UUID?
+    private var registrationAttemptUsername: String?
+
+    var isAuthenticationBootstrapUncertain: Bool {
+        needsLocalCleanupRetry
+            || needsAuthenticationStorageReload
+            || needsAuthenticationRecoveryRetry
+            || isRestoringSession
+    }
+
+    var isSetupMutationBlocked: Bool {
+        isWorking || isRegistrationInFlight || isAuthenticationBootstrapUncertain
+    }
 
     init(
         relayBaseURL: URL? = nil,
@@ -42,27 +75,99 @@ final class AppState: ObservableObject {
         mediaPipeline: MediaPipelining = DefaultMediaPipeline(),
         contactTrustStore: ContactTrustStoring = KeychainContactTrustStore(),
         messageReplayStore: MessageReplayStoring = KeychainMessageReplayStore(),
+        sessionStore: AuthSessionStoring = KeychainAuthSessionStore(),
+        pendingRegistrationStore: PendingRegistrationStoring = KeychainPendingRegistrationStore(),
+        preferences: UserDefaults = .standard,
         messageAuthenticator: MessageEnvelopeAuthenticator = MessageEnvelopeAuthenticator(),
         seedPreviewData: Bool = true
     ) {
-        let effectiveRelayBaseURL = relayBaseURL ?? Self.bundledDefaultRelayURL
-        self.relayBaseURLString = effectiveRelayBaseURL.absoluteString
-        self.apiClient = apiClient ?? SpeakeasyAPIClient(configuration: APIConfiguration(baseURL: effectiveRelayBaseURL))
+        self.sessionStore = sessionStore
+        self.pendingRegistrationStore = pendingRegistrationStore
+        self.preferences = preferences
+
+        let bootstrapMarkers = LocalAccountBootstrapMarkers(preferences: preferences)
+        self.bootstrapMarkers = bootstrapMarkers
+        let bootstrapPlan = seedPreviewData
+            ? LocalAccountBootstrapPlan(mode: .existingInstall)
+            : bootstrapMarkers.plan
+        var persistedSession: StoredAuthSession?
+        var persistedPendingRegistration: PendingRegistrationRecord?
+        var sessionBootstrapError: Error?
+        var pendingRegistrationBootstrapError: Error?
+        if !seedPreviewData {
+            do {
+                persistedSession = try LocalAccountSessionBootstrap.loadOrMigrate(
+                    plan: bootstrapPlan,
+                    legacySessionData: bootstrapMarkers.legacySessionData,
+                    sessionStore: sessionStore,
+                    decodeLegacySession: Self.decodeLegacyPersistedSession
+                ) { verifiedSession in
+                    // Record the in-place-upgrade classification before
+                    // deleting the only signal that distinguishes it from a
+                    // reinstall whose Keychain items survived app removal.
+                    bootstrapMarkers.preserveExistingInstallClassification()
+                    preferences.set(verifiedSession.relayBaseURLString, forKey: Self.relayBaseURLKey)
+                    bootstrapMarkers.discardLegacySession()
+                }
+            } catch {
+                sessionBootstrapError = error
+            }
+            if bootstrapPlan.permitsProtectedSessionRestore {
+                do {
+                    persistedPendingRegistration = try pendingRegistrationStore.load()
+                } catch {
+                    pendingRegistrationBootstrapError = error
+                }
+            }
+            if sessionBootstrapError == nil,
+               pendingRegistrationBootstrapError == nil,
+               let persistedSession,
+               let persistedPendingRegistration,
+               !PendingRegistrationRecovery.isCompatible(
+                    persistedSession,
+                    with: persistedPendingRegistration
+               ) {
+                pendingRegistrationBootstrapError = AuthSessionStoreError.conflictingRegistrationRecovery
+            }
+
+            // Never choose one authority when the other protected namespace
+            // could not be read or the two records conflict. A later reload
+            // reconciles both stores together without erasing either record.
+            if sessionBootstrapError != nil || pendingRegistrationBootstrapError != nil {
+                persistedSession = nil
+                persistedPendingRegistration = nil
+            }
+        }
+        let registrationUncertaintyWithoutAuthority = bootstrapPlan.requiresRegistrationReconciliation
+            && persistedSession == nil
+            && persistedPendingRegistration == nil
+            && sessionBootstrapError == nil
+            && pendingRegistrationBootstrapError == nil
+        let initializationError = sessionBootstrapError
+            ?? pendingRegistrationBootstrapError
+            ?? (registrationUncertaintyWithoutAuthority
+                ? AuthSessionStoreError.ambiguousRegistrationRecovery
+                : nil)
+
+        let preferredRelayURL = relayBaseURL
+            ?? persistedPendingRegistration.flatMap { URL(string: $0.relayBaseURLString) }
+            ?? persistedSession.flatMap { URL(string: $0.relayBaseURLString) }
+            ?? preferences.string(forKey: Self.relayBaseURLKey).flatMap(URL.init(string:))
+            ?? Self.bundledDefaultRelayURL
+        let safeAPIBaseURL = RelayURLPolicy.allows(preferredRelayURL)
+            ? preferredRelayURL
+            : Self.bundledDefaultRelayURL
+        self.relayBaseURLString = (persistedSession == nil ? safeAPIBaseURL : preferredRelayURL).absoluteString
+        self.apiClient = apiClient ?? SpeakeasyAPIClient(configuration: APIConfiguration(baseURL: safeAPIBaseURL))
         self.keyManager = keyManager
         self.mediaPipeline = mediaPipeline
         self.contactTrustStore = contactTrustStore
         self.messageReplayStore = messageReplayStore
         self.messageAuthenticator = messageAuthenticator
-        let persistedSession = seedPreviewData ? nil : Self.loadPersistedSession()
-        let hasInstallMarker = UserDefaults.standard.object(
-            forKey: Self.installMarkerKey
-        ) != nil
-        self.requiresFreshInstallKeychainReset = !seedPreviewData &&
-            !hasInstallMarker &&
-            persistedSession == nil
-        if !seedPreviewData && !self.requiresFreshInstallKeychainReset {
-            UserDefaults.standard.set(true, forKey: Self.installMarkerKey)
-        }
+        self.storedAuthSession = persistedSession
+        self.pendingRegistration = persistedPendingRegistration
+        self.requiresFreshInstallKeychainReset = !seedPreviewData
+            && bootstrapPlan.requiresCleanupBeforeIdentityCreation
 
         if seedPreviewData {
             let preview = PreviewData.sample
@@ -73,24 +178,51 @@ final class AppState: ObservableObject {
             self.conversations = preview.conversations
             self.messagesByContactID = preview.messagesByContactID
             self.lastInviteCode = nil
-            self.lastErrorMessage = nil
+            self.lastErrorMessage = initializationError?.localizedDescription
             self.activePlaybackFile = nil
         } else {
-            self.currentUser = persistedSession?.session.user
+            // Publish no authenticated UI state until restore has validated the
+            // protected identity and installed the matching API authority.
+            self.currentUser = nil
             self.deviceIdentity = nil
             self.contacts = []
             self.contactTrustAssessments = [:]
             self.conversations = []
             self.messagesByContactID = [:]
             self.lastInviteCode = nil
-            self.lastErrorMessage = nil
+            self.lastErrorMessage = initializationError?.localizedDescription
             self.activePlaybackFile = nil
         }
+        self.needsLocalCleanupRetry = bootstrapPlan.requiresVisibleCleanupRetry
+        self.needsAuthenticationStorageReload = initializationError != nil
+        self.needsAuthenticationRecoveryRetry = false
+        self.isRestoringSession = !self.needsAuthenticationStorageReload
+            && (persistedSession != nil || persistedPendingRegistration != nil)
 
-        if let persistedSession {
-            self.relayBaseURLString = persistedSession.relayBaseURLString
-            Task {
-                await restore(persistedSession)
+        if !seedPreviewData {
+            Task { [weak self] in
+                guard let self else {
+                    return
+                }
+                await self.apiClient.setAuthenticationRecoveryHandler { [weak self] in
+                    guard let self else {
+                        throw APIClientError.authenticationRecoveryUnavailable
+                    }
+                    return try await self.renewSession()
+                }
+                if self.needsAuthenticationStorageReload {
+                    self.isRestoringSession = false
+                } else if let persistedPendingRegistration,
+                   sessionBootstrapError == nil,
+                   pendingRegistrationBootstrapError == nil {
+                    await self.restorePendingRegistration(persistedPendingRegistration)
+                } else if let persistedSession,
+                          sessionBootstrapError == nil,
+                          pendingRegistrationBootstrapError == nil {
+                    await self.restore(persistedSession)
+                } else {
+                    self.isRestoringSession = false
+                }
             }
         }
     }
@@ -177,15 +309,25 @@ final class AppState: ObservableObject {
     }
 
     func updateRelayBaseURL(_ text: String) async {
-        let trimmedText = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let url = URL(string: trimmedText),
-              let scheme = url.scheme,
-              scheme == "http" || scheme == "https",
-              url.host != nil else {
-            lastErrorMessage = "Enter a valid relay URL."
+        guard !isAuthenticationBootstrapUncertain else {
+            lastErrorMessage = AuthenticationBootstrapBlockedError().localizedDescription
             return
         }
-        if currentUser != nil, trimmedText != relayBaseURLString {
+        let trimmedText = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let url = URL(string: trimmedText),
+              RelayURLPolicy.allows(url) else {
+#if DEBUG
+            lastErrorMessage = "Use HTTPS, or a local/private HTTP relay for Debug development."
+#else
+            lastErrorMessage = "Public release builds require an HTTPS relay URL."
+#endif
+            return
+        }
+        if (currentUser != nil
+                || storedAuthSession != nil
+                || pendingRegistration != nil
+                || isRegistrationInFlight),
+           trimmedText != relayBaseURLString {
             lastErrorMessage = "Reset local registration before switching relays so account keys, trust pins, and replay history cannot cross relay scopes."
             return
         }
@@ -199,6 +341,7 @@ final class AppState: ObservableObject {
 
     func prepareLocalIdentity() async {
         await perform {
+            try ensureAuthenticationBootstrapReadyForMutation()
             try await clearResidualKeychainAfterFreshInstallIfNeeded()
             deviceIdentity = try await keyManager.loadOrCreateIdentity()
         }
@@ -211,35 +354,233 @@ final class AppState: ObservableObject {
             return
         }
 
-        await perform {
-            try await clearResidualKeychainAfterFreshInstallIfNeeded()
-            let identity = try await keyManager.loadOrCreateIdentity()
-            guard identity.deviceID == nil else {
-                throw ContactMessagingSecurityError.localIdentityAlreadyBound
+        if let registrationTask {
+            guard registrationAttemptUsername == trimmedUsername else {
+                lastErrorMessage = "Registration for \(registrationAttemptUsername ?? "this account") is already in progress. Wait for it to finish before using another username."
+                return
             }
-            let session = try await apiClient.register(
-                username: trimmedUsername,
-                deviceName: "Kithra iOS",
-                encryptionPublicKey: identity.encryptionPublicKey,
-                signingPublicKey: identity.signingPublicKey
-            )
+            await registrationTask.value
+            return
+        }
 
-            try validateRegistrationSession(
-                session,
-                requestedUsername: trimmedUsername,
-                localIdentity: identity
-            )
-            let registeredIdentity = try await keyManager.bindRegisteredDeviceID(session.device.id)
-            try validateLocalIdentity(registeredIdentity, against: session)
+        let attemptID = UUID()
+        registrationAttemptID = attemptID
+        registrationAttemptUsername = trimmedUsername
+        isRegistrationInFlight = true
+        let task = Task { @MainActor [weak self] in
+            guard let self else {
+                return
+            }
+            await self.perform {
+                try await self.performRegistration(username: trimmedUsername)
+            }
+        }
+        registrationTask = task
+        await task.value
+        if registrationAttemptID == attemptID {
+            registrationTask = nil
+            registrationAttemptID = nil
+            registrationAttemptUsername = nil
+            isRegistrationInFlight = false
+        }
+    }
 
-            await apiClient.setBearerToken(session.bearerToken)
-            currentUser = session.user
-            deviceIdentity = registeredIdentity
-            persist(session: session)
-            contacts = []
-            conversations = []
-            messagesByContactID = [:]
-            try await refreshLocalState()
+    private func performRegistration(username: String) async throws {
+        if let pendingRegistration {
+            guard pendingRegistration.username == username else {
+                throw RegistrationRecoveryError.usernameMismatch(
+                    expected: pendingRegistration.username
+                )
+            }
+            do {
+                try await completePendingRegistration(pendingRegistration)
+                needsAuthenticationRecoveryRetry = false
+            } catch {
+                recordAuthenticationRecoveryFailure(error)
+                await suspendPublishedAuthenticationForRetry()
+                throw error
+            }
+            return
+        }
+        if let storedAuthSession, currentUser == nil {
+            guard storedAuthSession.session.user.username == username else {
+                throw RegistrationRecoveryError.usernameMismatch(
+                    expected: storedAuthSession.session.user.username
+                )
+            }
+            do {
+                try await completeProtectedRegistration(
+                    storedAuthSession,
+                    requestedUsername: username
+                )
+                needsAuthenticationRecoveryRetry = false
+            } catch {
+                recordAuthenticationRecoveryFailure(error)
+                await suspendPublishedAuthenticationForRetry()
+                throw error
+            }
+            return
+        }
+
+        try ensureAuthenticationBootstrapReadyForMutation()
+        try await clearResidualKeychainAfterFreshInstallIfNeeded()
+        let identity = try await keyManager.loadOrCreateIdentity()
+        guard identity.deviceID == nil else {
+            throw ContactMessagingSecurityError.localIdentityAlreadyBound
+        }
+        let registrationGeneration = accountStateGeneration
+        let registrationRelay = relayBaseURLString
+        let session = try await apiClient.register(
+            username: username,
+            deviceName: "Kithra iOS",
+            encryptionPublicKey: identity.encryptionPublicKey,
+            signingPublicKey: identity.signingPublicKey
+        )
+
+        guard accountStateGeneration == registrationGeneration,
+              !isClearingLocalAccountState,
+              relayBaseURLString == registrationRelay,
+              let currentIdentity = try await keyManager.currentIdentity(),
+              currentIdentity == identity else {
+            throw AuthSessionValidationError.noRecoverableSession
+        }
+        try AuthSessionValidator.validateRegistration(
+            session,
+            requestedUsername: username,
+            localIdentity: currentIdentity
+        )
+        guard accountStateGeneration == registrationGeneration,
+              !isClearingLocalAccountState,
+              relayBaseURLString == registrationRelay else {
+            throw AuthSessionValidationError.noRecoverableSession
+        }
+        let pendingRecord = PendingRegistrationRecord(
+            relayBaseURLString: registrationRelay,
+            username: username,
+            session: session,
+            expectedIdentity: PendingRegistrationIdentity(currentIdentity)
+        )
+        do {
+            try PendingRegistrationPersistence.saveAndVerify(
+                pendingRecord,
+                in: pendingRegistrationStore
+            )
+        } catch {
+            // A failed save may have partially written the pending record. Mark
+            // uncertainty before attempting rollback so a failed rollback is
+            // still fail-closed after process death.
+            let persistenceError = error
+            bootstrapMarkers.markRegistrationUncertain()
+            pendingRegistration = pendingRecord
+            await apiClient.setAuthSession(session)
+            do {
+                try await apiClient.deleteAccount()
+            } catch {
+                await apiClient.setAuthSession(nil)
+                needsAuthenticationRecoveryRetry = true
+                throw RegistrationRecoveryError.rollbackFailed(
+                    persistenceDetail: persistenceError.localizedDescription,
+                    rollbackDetail: error.localizedDescription
+                )
+            }
+            await apiClient.setAuthSession(nil)
+            pendingRegistration = nil
+            do {
+                try pendingRegistrationStore.remove()
+                try sessionStore.remove()
+            } catch {
+                // A failed verified save may still have left a partial
+                // Keychain item behind. Persist the cleanup gate so a relaunch
+                // cannot treat stale authority as usable or create replacement
+                // device keys before removal succeeds.
+                bootstrapMarkers.beginCleanup()
+                bootstrapMarkers.markCleanupFailed()
+                requiresFreshInstallKeychainReset = true
+                needsLocalCleanupRetry = true
+                throw RegistrationRecoveryError.rollbackCleanupFailed(
+                    persistenceDetail: persistenceError.localizedDescription,
+                    cleanupDetail: error.localizedDescription
+                )
+            }
+            bootstrapMarkers.resolveRegistrationUncertainty()
+            throw persistenceError
+        }
+        guard accountStateGeneration == registrationGeneration,
+              !isClearingLocalAccountState,
+              relayBaseURLString == registrationRelay else {
+            // The durable pending record intentionally remains for the current
+            // generation to recover on the next explicit retry.
+            throw AuthSessionValidationError.noRecoverableSession
+        }
+        pendingRegistration = pendingRecord
+        do {
+            try await completePendingRegistration(pendingRecord)
+            needsAuthenticationRecoveryRetry = false
+        } catch {
+            recordAuthenticationRecoveryFailure(error)
+            await suspendPublishedAuthenticationForRetry()
+            throw error
+        }
+    }
+
+    /// Reloads both protected authentication namespaces as one authority. This
+    /// path never removes keys, sessions, or pending records. A verified legacy
+    /// bearer is removed only after its matching Keychain copy passes readback.
+    func retryAuthenticationStorageLoad() async {
+        guard !isRestoringSession, !needsLocalCleanupRetry else {
+            return
+        }
+
+        isRestoringSession = true
+        needsAuthenticationStorageReload = false
+        var reloadedSession: StoredAuthSession?
+        var reloadedPending: PendingRegistrationRecord?
+        let loaded = await perform {
+            let records = try loadProtectedAuthenticationRecords()
+            reloadedSession = records.session
+            reloadedPending = records.pending
+        }
+        guard loaded else {
+            needsAuthenticationStorageReload = true
+            isRestoringSession = false
+            return
+        }
+
+        storedAuthSession = reloadedSession
+        pendingRegistration = reloadedPending
+        if let protectedRelay = reloadedPending?.relayBaseURLString
+            ?? reloadedSession?.relayBaseURLString {
+            relayBaseURLString = protectedRelay
+        }
+
+        if let reloadedPending {
+            await restorePendingRegistration(reloadedPending)
+        } else if let reloadedSession {
+            await restore(reloadedSession)
+        } else {
+            isRestoringSession = false
+            needsAuthenticationRecoveryRetry = false
+            lastErrorMessage = nil
+        }
+    }
+
+    func retryAuthenticationRecovery() async {
+        guard !isRestoringSession else {
+            return
+        }
+        if needsAuthenticationStorageReload {
+            await retryAuthenticationStorageLoad()
+            return
+        }
+        isRestoringSession = true
+        needsAuthenticationRecoveryRetry = false
+        if let pendingRegistration {
+            await restorePendingRegistration(pendingRegistration)
+        } else if let storedAuthSession {
+            await restore(storedAuthSession)
+        } else {
+            isRestoringSession = false
+            lastErrorMessage = AuthSessionValidationError.noRecoverableSession.localizedDescription
         }
     }
 
@@ -355,42 +696,123 @@ final class AppState: ObservableObject {
     func deleteAccount() async {
         await perform {
             try await apiClient.deleteAccount()
-            await clearLocalAccountState()
+            try await clearLocalAccountState()
         }
     }
 
-    func resetLocalRegistration() async {
+    func resetLocalRegistration(
+        confirmation: LocalRegistrationResetConfirmation
+    ) async {
+        guard confirmation == .eraseProtectedLocalAccount else {
+            return
+        }
         await perform {
-            await clearLocalAccountState()
+            // If the relay is reachable, revoke the server-side bearer before
+            // erasing the signing identity that could renew it. Local cleanup
+            // still completes offline; any surviving server session is short-
+            // lived and expires independently.
+            try? await apiClient.logout()
+            try await clearLocalAccountState()
         }
     }
 
     func discardActivePlaybackFile() async {
+        playbackPreparationGeneration &+= 1
+        var cleanupURLs = playbackPreparationPermits.values.flatMap { $0.invalidate() }
         playbackCleanupTask?.cancel()
         playbackCleanupTask = nil
-        guard let activePlaybackFile else {
-            return
+        if let activePlaybackFile {
+            cleanupURLs.append(activePlaybackFile.url)
         }
 
         self.activePlaybackFile = nil
-        await mediaPipeline.cleanupTemporaryFiles([activePlaybackFile.url])
+        await mediaPipeline.cleanupTemporaryFiles(uniqueURLs(cleanupURLs))
     }
 
-    func sendVideo(rawVideoURL: URL, quality: DeliveryVideoQuality, to contact: Contact) async {
+    func resumePlaintextProductionAfterBecomingActive() {
+        allowsPlaybackPreparation = true
+        allowsPlaintextProduction = true
+    }
+
+    func invalidatePlaintextProductionForBackground() {
+        allowsPlaybackPreparation = false
+        playbackPreparationGeneration &+= 1
+        allowsPlaintextProduction = false
+        plaintextProductionGeneration &+= 1
+
+        var cleanupURLs = playbackPreparationPermits.values.flatMap { $0.invalidate() }
+        cleanupURLs.append(
+            contentsOf: plaintextProductionPermits.values.flatMap { $0.invalidate() }
+        )
+        playbackCleanupTask?.cancel()
+        playbackCleanupTask = nil
+        if let activePlaybackFile {
+            cleanupURLs.append(activePlaybackFile.url)
+        }
+        activePlaybackFile = nil
+        cleanupURLs.append(contentsOf: clearLocalThumbnailReferencesForBackground())
+
+        invalidatedPlaintextURLsPendingCleanup.append(contentsOf: cleanupURLs)
+        invalidatedPlaintextURLsPendingCleanup = uniqueURLs(
+            invalidatedPlaintextURLsPendingCleanup
+        )
+    }
+
+    func cleanupInvalidatedPlaintextFiles() async {
+        let cleanupURLs = invalidatedPlaintextURLsPendingCleanup
+        invalidatedPlaintextURLsPendingCleanup.removeAll()
+        do {
+            try await mediaPipeline.removePlaintextTemporaryFiles(cleanupURLs)
+        } catch {
+            // Keep exact paths queued so foreground recovery or the next scene
+            // transition retries deletion instead of relying only on relaunch.
+            invalidatedPlaintextURLsPendingCleanup.append(contentsOf: cleanupURLs)
+            invalidatedPlaintextURLsPendingCleanup = uniqueURLs(
+                invalidatedPlaintextURLsPendingCleanup
+            )
+        }
+    }
+
+    func sendVideo(
+        rawVideoURL: URL,
+        quality: DeliveryVideoQuality,
+        to contact: Contact,
+        onPlaintextOwnershipAccepted: (() -> Void)? = nil
+    ) async {
+        guard let plaintextPreparation = beginPlaintextProduction(
+            tracking: [rawVideoURL]
+        ) else {
+            try? await mediaPipeline.removePlaintextTemporaryFiles([rawVideoURL])
+            onPlaintextOwnershipAccepted?()
+            return
+        }
+        // No actor suspension occurs between installing this AppState permit
+        // and releasing the producer's prior ownership, so scene invalidation
+        // always sees at least one exact-path owner during the handoff.
+        onPlaintextOwnershipAccepted?()
+        defer { finishPlaintextProduction(plaintextPreparation.permit) }
+
+        var plaintextURLsPendingCleanup = [rawVideoURL]
         await perform {
+            try requirePlaintextProduction(plaintextPreparation)
             guard let currentUser, let senderDeviceID = deviceIdentity?.deviceID else {
                 throw DeviceKeyManagerError.identityNotFound
             }
-            let compressedVideoURL = try await mediaPipeline.compressForDelivery(
-                rawVideoURL: rawVideoURL,
-                quality: quality
-            )
             var generatedPackage: EncryptedMediaPackage?
             var durableLocalPackageURL: URL?
+            var durableOutgoingClientMessageID: UUID?
             var generatedThumbnailURL: URL?
             var uploadStarted = false
 
             do {
+                let compressedVideoURL = try await mediaPipeline.compressForDelivery(
+                    rawVideoURL: rawVideoURL,
+                    quality: quality,
+                    permit: plaintextPreparation.permit
+                )
+                plaintextURLsPendingCleanup.append(compressedVideoURL)
+                try requirePlaintextProduction(plaintextPreparation)
+
                 // Compression crosses an async suspension point. Re-resolve the contact
                 // and its pin immediately before encrypting.
                 let initialVerification = try verifiedRecipient(for: contact.contactID)
@@ -406,6 +828,11 @@ final class AppState: ObservableObject {
                     recipientIdentityDigest: try initialVerification.recipient.identityDigest
                 )
                 generatedPackage = package
+                try requirePlaintextProduction(plaintextPreparation)
+                try EncryptedMediaUploadPolicy.validate(
+                    fileURL: package.encryptedBlobURL,
+                    declaredBlobSize: package.blobSize
+                )
 
                 // Encryption is also asynchronous. Require the exact same local and
                 // remote identities immediately before upload; otherwise discard the
@@ -431,6 +858,7 @@ final class AppState: ObservableObject {
                 }
                 let encryptedIdentifier = LocalEncryptedMediaIdentifier
                     .outgoingClientMessage(clientMessageID)
+                durableOutgoingClientMessageID = clientMessageID
                 let thumbnailIdentifier = try AuthenticatedThumbnailIdentifier(
                     authority: .outgoingClientMessage(clientMessageID),
                     envelopeSignature: envelopeSignature
@@ -445,9 +873,20 @@ final class AppState: ObservableObject {
                     clientMessageID: clientMessageID
                 )
                 durableLocalPackageURL = localPackageURL
+                try requirePlaintextProduction(plaintextPreparation)
 
-                // Durable persistence suspends. Recheck both exact identities
-                // once more immediately before the relay receives ciphertext.
+                // The thumbnail is derived before the delivery video is erased,
+                // and is bound to the signed client message ID rather than a
+                // relay-selected identifier.
+                generatedThumbnailURL = try await mediaPipeline.makeThumbnail(
+                    videoURL: compressedVideoURL,
+                    identifier: thumbnailIdentifier,
+                    permit: plaintextPreparation.permit
+                )
+                try requirePlaintextProduction(plaintextPreparation)
+
+                // Durable persistence and thumbnail generation suspend. Recheck
+                // both exact identities before retaining their output.
                 guard self.currentUser?.id == currentUser.id,
                       deviceIdentity?.deviceID == senderDeviceID else {
                     throw ContactMessagingSecurityError.localIdentityMismatch
@@ -457,6 +896,29 @@ final class AppState: ObservableObject {
                       uploadVerification.context.localIdentity.constantTimeEquals(
                           initialVerification.context.localIdentity
                       ) else {
+                    throw ContactMessagingSecurityError.identityChangedDuringSend
+                }
+
+                // From this point forward upload and retry need ciphertext only.
+                // Abort before contacting the relay unless every raw/compressed
+                // plaintext input has been synchronously removed.
+                try await mediaPipeline.removePlaintextTemporaryFiles(
+                    plaintextURLsPendingCleanup
+                )
+                plaintextURLsPendingCleanup.removeAll()
+
+                // Plaintext deletion is an async protocol boundary. Recheck once
+                // more immediately before the relay receives ciphertext.
+                guard self.currentUser?.id == currentUser.id,
+                      deviceIdentity?.deviceID == senderDeviceID else {
+                    throw ContactMessagingSecurityError.localIdentityMismatch
+                }
+                let postCleanupVerification = try verifiedRecipient(for: contact.contactID)
+                guard postCleanupVerification.recipient.constantTimeEquals(
+                    initialVerification.recipient
+                ), postCleanupVerification.context.localIdentity.constantTimeEquals(
+                    initialVerification.context.localIdentity
+                ) else {
                     throw ContactMessagingSecurityError.identityChangedDuringSend
                 }
 
@@ -494,18 +956,6 @@ final class AppState: ObservableObject {
 
                 message.createdAt = package.envelope.createdAt
                 message.localEncryptedPackageURL = localPackageURL
-                generatedThumbnailURL = try? await mediaPipeline.makeThumbnail(
-                    videoURL: compressedVideoURL,
-                    identifier: thumbnailIdentifier
-                )
-
-                // Thumbnail generation suspends and may recreate its temporary
-                // root after a concurrent account reset. Recheck before exposing
-                // the thumbnail, media URL, or sent message in app state.
-                guard self.currentUser?.id == currentUser.id,
-                      deviceIdentity?.deviceID == senderDeviceID else {
-                    throw ContactMessagingSecurityError.localIdentityMismatch
-                }
                 let publicationVerification = try verifiedRecipient(for: contact.contactID)
                 guard publicationVerification.recipient.constantTimeEquals(
                     initialVerification.recipient
@@ -514,7 +964,15 @@ final class AppState: ObservableObject {
                 ) else {
                     throw ContactMessagingSecurityError.identityChangedDuringSend
                 }
-                message.localThumbnailURL = generatedThumbnailURL
+                if plaintextPreparation.permit.isValid {
+                    message.localThumbnailURL = generatedThumbnailURL
+                } else {
+                    if let generatedThumbnailURL {
+                        await mediaPipeline.cleanupTemporaryFiles([generatedThumbnailURL])
+                    }
+                    generatedThumbnailURL = nil
+                    message.localThumbnailURL = nil
+                }
                 rememberLocalMedia(
                     for: message,
                     encryptedIdentifier: encryptedIdentifier,
@@ -524,11 +982,48 @@ final class AppState: ObservableObject {
                 messagesByContactID[initialVerification.recipient.userID, default: []].append(message)
                 rebuildConversations()
                 generatedThumbnailURL = nil
-                let cleanupURLs = [compressedVideoURL, package.encryptedBlobURL, package.localEncryptedCopyURL]
+                let cleanupURLs = [package.encryptedBlobURL, package.localEncryptedCopyURL]
                     .filter { $0 != message.localEncryptedPackageURL }
                 await mediaPipeline.cleanupTemporaryFiles(cleanupURLs)
             } catch {
-                var cleanupURLs = [compressedVideoURL]
+                var surfacedError: Error = error
+                do {
+                    try await mediaPipeline.removePlaintextTemporaryFiles(
+                        plaintextURLsPendingCleanup
+                    )
+                    plaintextURLsPendingCleanup.removeAll()
+                } catch {
+                    surfacedError = MediaSendPlaintextCleanupError(
+                        sendDetail: surfacedError.localizedDescription,
+                        cleanupDetail: error.localizedDescription
+                    )
+                }
+                let definitelyNotAccepted: Bool
+                if !uploadStarted || error is EncryptedMediaUploadPolicyError {
+                    definitelyNotAccepted = true
+                } else if let apiError = error as? APIClientError {
+                    definitelyNotAccepted = apiError.uploadWasDefinitelyNotAccepted
+                } else {
+                    definitelyNotAccepted = false
+                }
+
+                if definitelyNotAccepted,
+                   durableLocalPackageURL != nil,
+                   let durableOutgoingClientMessageID {
+                    do {
+                        try await mediaPipeline.removeLocalEncryptedPackage(
+                            for: .outgoingClientMessage(durableOutgoingClientMessageID)
+                        )
+                        durableLocalPackageURL = nil
+                    } catch {
+                        surfacedError = DefinitiveUploadLocalCleanupError(
+                            uploadDetail: surfacedError.localizedDescription,
+                            cleanupDetail: error.localizedDescription
+                        )
+                    }
+                }
+
+                var cleanupURLs: [URL] = []
                 if let generatedPackage {
                     cleanupURLs.append(generatedPackage.encryptedBlobURL)
                     cleanupURLs.append(generatedPackage.localEncryptedCopyURL)
@@ -541,17 +1036,38 @@ final class AppState: ObservableObject {
                 }
                 // Once upload starts, its result may be ambiguous. Keep the
                 // durable client-ID copy so a later relay refresh can bind an
-                // accepted signed envelope without duplicating the send.
+                // accepted signed envelope without duplicating the send. Known
+                // local/preflight failures and relay 413/507 rejections remove
+                // that copy through the throwing path above.
                 await mediaPipeline.cleanupTemporaryFiles(cleanupURLs)
-                throw error
+                throw surfacedError
+            }
+        }
+
+        // `perform` intentionally skips work while account cleanup is active.
+        // The captured raw file still belongs to this call and must never be
+        // left behind in that case (or after a failed first cleanup attempt).
+        if !plaintextURLsPendingCleanup.isEmpty {
+            do {
+                try await mediaPipeline.removePlaintextTemporaryFiles(
+                    plaintextURLsPendingCleanup
+                )
+            } catch {
+                lastErrorMessage = error.localizedDescription
             }
         }
     }
 
     func preparePlayback(message: Message) async -> PlaybackTempFile? {
+        guard let preparation = beginPlaybackPreparation() else {
+            return nil
+        }
+        defer { finishPlaybackPreparation(preparation.permit) }
+
         var preparedPlaybackFile: PlaybackTempFile?
 
         await perform {
+            try requirePlaybackPreparation(preparation)
             var playableMessage = message
             let contactID = contactID(for: message)
             var shouldAcknowledgeDelivery = false
@@ -587,6 +1103,7 @@ final class AppState: ObservableObject {
                     if let localURL = await mediaPipeline.localEncryptedPackageURL(
                         for: mediaIdentifiers.encrypted
                     ) {
+                        try requirePlaybackPreparation(preparation)
                         try reauthenticateMessageDirection(
                             playableMessage,
                             expected: authenticatedDirection
@@ -598,12 +1115,14 @@ final class AppState: ObservableObject {
                             throw MediaPipelineError.cryptoOperationFailed("Finding a local encrypted copy for sent-message playback")
                         }
                         let downloadedBlobURL = try await apiClient.downloadMessage(id: message.id)
+                        try requirePlaybackPreparation(preparation)
                         do {
                             let stagedPackage = try await mediaPipeline.stageReceivedPackage(
                                 message: message,
                                 downloadedBlobURL: downloadedBlobURL
                             )
                             stagedReceivedPackage = stagedPackage
+                            try requirePlaybackPreparation(preparation)
                         } catch {
                             await mediaPipeline.cleanupTemporaryFiles([downloadedBlobURL])
                             throw error
@@ -615,6 +1134,7 @@ final class AppState: ObservableObject {
                             message: message,
                             security: acceptanceSecurity
                         )
+                        try requirePlaybackPreparation(preparation)
                         guard let stagedPackage = stagedReceivedPackage else {
                             throw MediaPipelineError.stagedPackageMissing
                         }
@@ -622,12 +1142,14 @@ final class AppState: ObservableObject {
                             stagedPackage,
                             allowExistingExactRecovery: reservation == .recoveringPending
                         )
+                        try requirePlaybackPreparation(preparation)
                         stagedReceivedPackage = nil
                         let commitSecurity = try authenticateIncomingMessage(message)
                         try await markNetworkReceiptCommitted(
                             message: message,
                             security: commitSecurity
                         )
+                        try requirePlaybackPreparation(preparation)
                         _ = try authenticateIncomingMessage(message)
                         playableMessage.localEncryptedPackageURL = package.localEncryptedCopyURL
                         shouldAcknowledgeDelivery = true
@@ -654,18 +1176,25 @@ final class AppState: ObservableObject {
                     // A pending receipt may only be promoted after proving that
                     // the exact signed ciphertext, not merely its filename, is local.
                     try await mediaPipeline.validateEncryptedPackage(package)
+                    try requirePlaybackPreparation(preparation)
                     let currentSecurity = try authenticateIncomingMessage(playableMessage)
                     try await validateLocalReceipt(
                         message: playableMessage,
                         security: currentSecurity
                     )
+                    try requirePlaybackPreparation(preparation)
                 }
+                try requirePlaybackPreparation(preparation)
                 try reauthenticateMessageDirection(
                     playableMessage,
                     expected: authenticatedDirection
                 )
-                let playbackFile = try await mediaPipeline.decryptForPlayback(package: package)
+                let playbackFile = try await mediaPipeline.decryptForPlayback(
+                    package: package,
+                    permit: preparation.permit
+                )
                 generatedPlaybackFile = playbackFile
+                try requirePlaybackPreparation(preparation)
                 try reauthenticateMessageDirection(
                     playableMessage,
                     expected: authenticatedDirection
@@ -674,8 +1203,10 @@ final class AppState: ObservableObject {
                 if playableMessage.localThumbnailURL == nil {
                     generatedThumbnailURL = try? await mediaPipeline.makeThumbnail(
                         videoURL: playbackFile.url,
-                        identifier: mediaIdentifiers.thumbnail
+                        identifier: mediaIdentifiers.thumbnail,
+                        permit: preparation.permit
                     )
+                    try requirePlaybackPreparation(preparation)
                     // Thumbnail generation suspends after plaintext exists. Do not
                     // publish that derivative if the current relay contact no longer
                     // matches the verified pin.
@@ -691,6 +1222,7 @@ final class AppState: ObservableObject {
                         expected: authenticatedDirection
                     )
                     try await apiClient.acknowledgeDelivered(messageID: playableMessage.id)
+                    try requirePlaybackPreparation(preparation)
                     try reauthenticateMessageDirection(
                         playableMessage,
                         expected: authenticatedDirection
@@ -710,6 +1242,7 @@ final class AppState: ObservableObject {
                         activePlaybackFile = nil
                     }
                     await mediaPipeline.cleanupTemporaryFiles([previousPlaybackURL])
+                    try requirePlaybackPreparation(preparation)
                 }
 
                 // This is the final pin check after every suspension above. No
@@ -719,6 +1252,7 @@ final class AppState: ObservableObject {
                     playableMessage,
                     expected: authenticatedDirection
                 )
+                try requirePlaybackPreparation(preparation)
                 if let generatedThumbnailURL {
                     playableMessage.localThumbnailURL = generatedThumbnailURL
                 }
@@ -1170,7 +1704,6 @@ final class AppState: ObservableObject {
 
     private func cacheIncomingMessage(_ message: Message) async {
         var stagedReceivedPackage: StagedReceivedMediaPackage?
-        var generatedThumbnailURL: URL?
         var incomingOperationKey: IncomingReceiptOperationKey?
         defer {
             if let incomingOperationKey {
@@ -1229,36 +1762,36 @@ final class AppState: ObservableObject {
             let playbackSecurity = try authenticateIncomingMessage(cachedMessage)
             try await validateLocalReceipt(message: cachedMessage, security: playbackSecurity)
             _ = try authenticateIncomingMessage(cachedMessage)
-            if let thumbnailURL = try await makeThumbnail(
-                for: cachedMessage,
-                localEncryptedPackageURL: package.localEncryptedCopyURL,
-                direction: .incoming(playbackSecurity)
-            ) {
-                generatedThumbnailURL = thumbnailURL
-                _ = try authenticateIncomingMessage(cachedMessage)
-                cachedMessage.localThumbnailURL = thumbnailURL
-                rememberLocalMedia(
-                    for: cachedMessage,
-                    encryptedIdentifier: mediaIdentifiers.encrypted,
-                    thumbnailIdentifier: mediaIdentifiers.thumbnail
-                )
-                generatedThumbnailURL = nil
-            }
-
-            upsert(cachedMessage, contactID: contactID)
-            _ = try authenticateIncomingMessage(cachedMessage)
+            // Delivery durability depends on the authenticated local
+            // ciphertext and replay receipt, not on a best-effort local
+            // thumbnail. Finish the network status transition first so no
+            // post-thumbnail await can republish a stale plaintext URL.
             try await apiClient.acknowledgeDelivered(messageID: message.id)
             _ = try authenticateIncomingMessage(cachedMessage)
             cachedMessage.status = .delivered
             upsert(cachedMessage, contactID: contactID)
+
+            try await makeAndPublishThumbnail(
+                for: cachedMessage,
+                localEncryptedPackageURL: package.localEncryptedCopyURL,
+                direction: .incoming(playbackSecurity)
+            ) { thumbnailURL in
+                _ = try authenticateIncomingMessage(cachedMessage)
+                var publishedMessage = cachedMessage
+                publishedMessage.localThumbnailURL = thumbnailURL
+                rememberLocalMedia(
+                    for: publishedMessage,
+                    encryptedIdentifier: mediaIdentifiers.encrypted,
+                    thumbnailIdentifier: mediaIdentifiers.thumbnail
+                )
+                upsert(publishedMessage, contactID: contactID)
+            }
         } catch {
             if let stagedReceivedPackage {
                 await mediaPipeline.discardStagedReceivedPackage(stagedReceivedPackage)
             }
-            if let generatedThumbnailURL {
-                await mediaPipeline.cleanupTemporaryFiles([generatedThumbnailURL])
-            }
-            // Keep the relay copy visible as a playable pending tile; the next refresh can retry.
+            // Keep the authenticated local copy visible; a later refresh can
+            // regenerate a missing best-effort thumbnail.
         }
     }
 
@@ -1269,7 +1802,6 @@ final class AppState: ObservableObject {
                 continue
             }
 
-            var generatedThumbnailURL: URL?
             do {
                 let direction = try authenticateMessageDirection(message)
                 let incomingSecurity: IncomingMessageSecurityContext?
@@ -1303,43 +1835,43 @@ final class AppState: ObservableObject {
                     )
                 }
                 try reauthenticateMessageDirection(message, expected: direction)
-                guard let thumbnailURL = try await makeThumbnail(
+                try await makeAndPublishThumbnail(
                     for: message,
                     localEncryptedPackageURL: localEncryptedPackageURL,
                     direction: direction
-                ) else {
-                    continue
-                }
-                generatedThumbnailURL = thumbnailURL
-                try reauthenticateMessageDirection(message, expected: direction)
+                ) { thumbnailURL in
+                    try reauthenticateMessageDirection(message, expected: direction)
 
-                var updatedMessage = message
-                updatedMessage.localThumbnailURL = thumbnailURL
-                let mediaIdentifiers = try localMediaIdentifiers(
-                    for: updatedMessage,
-                    direction: direction
-                )
-                rememberLocalMedia(
-                    for: updatedMessage,
-                    encryptedIdentifier: mediaIdentifiers.encrypted,
-                    thumbnailIdentifier: mediaIdentifiers.thumbnail
-                )
-                upsert(updatedMessage, contactID: contactID(for: message))
-                generatedThumbnailURL = nil
-            } catch {
-                if let generatedThumbnailURL {
-                    await mediaPipeline.cleanupTemporaryFiles([generatedThumbnailURL])
+                    var updatedMessage = message
+                    updatedMessage.localThumbnailURL = thumbnailURL
+                    let mediaIdentifiers = try localMediaIdentifiers(
+                        for: updatedMessage,
+                        direction: direction
+                    )
+                    rememberLocalMedia(
+                        for: updatedMessage,
+                        encryptedIdentifier: mediaIdentifiers.encrypted,
+                        thumbnailIdentifier: mediaIdentifiers.thumbnail
+                    )
+                    upsert(updatedMessage, contactID: contactID(for: message))
                 }
+            } catch {
                 print("Kithra thumbnail generation failed for \(message.id.uuidString): \(error.localizedDescription)")
             }
         }
     }
 
-    private func makeThumbnail(
+    private func makeAndPublishThumbnail(
         for message: Message,
         localEncryptedPackageURL: URL,
-        direction: AuthenticatedMessageDirection
-    ) async throws -> URL? {
+        direction: AuthenticatedMessageDirection,
+        publish: (URL) throws -> Void
+    ) async throws {
+        guard let preparation = beginPlaybackPreparation() else {
+            throw MediaPipelineError.playbackPreparationInvalidated
+        }
+        defer { finishPlaybackPreparation(preparation.permit) }
+
         let mediaIdentifiers = try localMediaIdentifiers(
             for: message,
             direction: direction
@@ -1349,21 +1881,32 @@ final class AppState: ObservableObject {
             localEncryptedPackageURL: localEncryptedPackageURL,
             direction: direction
         )
+        try requirePlaybackPreparation(preparation)
         try reauthenticateMessageDirection(message, expected: direction)
-        let playbackFile = try await mediaPipeline.decryptForPlayback(package: package)
+        let playbackFile = try await mediaPipeline.decryptForPlayback(
+            package: package,
+            permit: preparation.permit
+        )
         var generatedThumbnailURL: URL?
         do {
+            try requirePlaybackPreparation(preparation)
             try reauthenticateMessageDirection(message, expected: direction)
             let thumbnailURL = try await mediaPipeline.makeThumbnail(
                 videoURL: playbackFile.url,
-                identifier: mediaIdentifiers.thumbnail
+                identifier: mediaIdentifiers.thumbnail,
+                permit: preparation.permit
             )
             generatedThumbnailURL = thumbnailURL
+            try requirePlaybackPreparation(preparation)
             try reauthenticateMessageDirection(message, expected: direction)
             await mediaPipeline.cleanupTemporaryFiles([playbackFile.url])
+            try requirePlaybackPreparation(preparation)
             try reauthenticateMessageDirection(message, expected: direction)
+            // Publication is synchronous and occurs before the permit is
+            // finished. Scene invalidation therefore either clears this URL
+            // afterward or invalidates the permit before it can be published.
+            try publish(thumbnailURL)
             generatedThumbnailURL = nil
-            return thumbnailURL
         } catch {
             var cleanupURLs = [playbackFile.url]
             if let generatedThumbnailURL {
@@ -1391,6 +1934,100 @@ final class AppState: ObservableObject {
         }
         .sorted {
             ($0.latestMessage?.createdAt ?? .distantPast) > ($1.latestMessage?.createdAt ?? .distantPast)
+        }
+    }
+
+    private func beginPlaybackPreparation() -> (
+        generation: UInt64,
+        permit: PlaybackPreparationPermit
+    )? {
+        guard allowsPlaybackPreparation else {
+            return nil
+        }
+        let permit = PlaybackPreparationPermit()
+        playbackPreparationPermits[permit.id] = permit
+        return (playbackPreparationGeneration, permit)
+    }
+
+    private func requirePlaybackPreparation(
+        _ preparation: (generation: UInt64, permit: PlaybackPreparationPermit)
+    ) throws {
+        guard allowsPlaybackPreparation,
+              preparation.generation == playbackPreparationGeneration,
+              playbackPreparationPermits[preparation.permit.id] === preparation.permit,
+              preparation.permit.isValid else {
+            throw MediaPipelineError.playbackPreparationInvalidated
+        }
+    }
+
+    private func finishPlaybackPreparation(_ permit: PlaybackPreparationPermit) {
+        if playbackPreparationPermits[permit.id] === permit {
+            playbackPreparationPermits[permit.id] = nil
+        }
+    }
+
+    private func beginPlaintextProduction(
+        tracking urls: [URL]
+    ) -> (generation: UInt64, permit: ForegroundPlaintextPermit)? {
+        guard allowsPlaintextProduction else {
+            return nil
+        }
+        let permit = ForegroundPlaintextPermit()
+        do {
+            try permit.registerOutputs(urls)
+        } catch {
+            return nil
+        }
+        plaintextProductionPermits[permit.id] = permit
+        return (plaintextProductionGeneration, permit)
+    }
+
+    private func requirePlaintextProduction(
+        _ preparation: (generation: UInt64, permit: ForegroundPlaintextPermit)
+    ) throws {
+        guard allowsPlaintextProduction,
+              preparation.generation == plaintextProductionGeneration,
+              plaintextProductionPermits[preparation.permit.id] === preparation.permit,
+              preparation.permit.isValid else {
+            throw MediaPipelineError.plaintextProductionInvalidated
+        }
+    }
+
+    private func finishPlaintextProduction(_ permit: ForegroundPlaintextPermit) {
+        if plaintextProductionPermits[permit.id] === permit {
+            plaintextProductionPermits[permit.id] = nil
+        }
+    }
+
+    private func clearLocalThumbnailReferencesForBackground() -> [URL] {
+        var cleanupURLs = Array(localThumbnailURLs.values)
+        var changed = false
+        for contactID in Array(messagesByContactID.keys) {
+            let messages = messagesByContactID[contactID, default: []]
+            let clearedMessages = messages.map { message -> Message in
+                guard let localThumbnailURL = message.localThumbnailURL else {
+                    return message
+                }
+                cleanupURLs.append(localThumbnailURL)
+                changed = true
+                var clearedMessage = message
+                clearedMessage.localThumbnailURL = nil
+                return clearedMessage
+            }
+            messagesByContactID[contactID] = clearedMessages
+        }
+        localThumbnailURLs.removeAll()
+        if changed {
+            rebuildConversations()
+        }
+        return uniqueURLs(cleanupURLs)
+    }
+
+    private func uniqueURLs(_ urls: [URL]) -> [URL] {
+        var paths: Set<String> = []
+        return urls.compactMap { url in
+            let canonicalURL = url.standardizedFileURL
+            return paths.insert(canonicalURL.path).inserted ? canonicalURL : nil
         }
     }
 
@@ -1534,25 +2171,43 @@ final class AppState: ObservableObject {
         do {
             try await operation()
             return true
+        } catch MediaPipelineError.playbackPreparationInvalidated {
+            return false
+        } catch MediaPipelineError.plaintextProductionInvalidated {
+            return false
         } catch {
             lastErrorMessage = error.localizedDescription
             return false
         }
     }
 
-    private func clearLocalAccountState() async {
+    private func clearLocalAccountState() async throws {
         isClearingLocalAccountState = true
         defer { isClearingLocalAccountState = false }
+        // Persist the destructive intent before revoking any in-memory or
+        // Keychain authority. A crash from this point onward must resume cleanup
+        // instead of restoring a partially deleted account.
+        bootstrapMarkers.beginCleanup()
+        requiresFreshInstallKeychainReset = true
         accountStateGeneration &+= 1
+        registrationTask?.cancel()
+        registrationTask = nil
+        registrationAttemptID = nil
+        registrationAttemptUsername = nil
+        isRegistrationInFlight = false
+        sessionRenewalTask?.cancel()
+        sessionRenewalTask = nil
         stopRemotePolling()
         playbackCleanupTask?.cancel()
         playbackCleanupTask = nil
-        let activePlaybackURL = activePlaybackFile?.url
 
         // Revoke all in-memory authority before the first cleanup suspension.
         // Otherwise a concurrent verification task can recreate a Keychain pin
         // after removeAll() and leave it behind when reset completes.
-        UserDefaults.standard.removeObject(forKey: Self.persistedSessionKey)
+        storedAuthSession = nil
+        pendingRegistration = nil
+        needsAuthenticationStorageReload = false
+        needsAuthenticationRecoveryRetry = false
         deviceIdentity = nil
         contacts = []
         contactTrustAssessments = [:]
@@ -1564,168 +2219,565 @@ final class AppState: ObservableObject {
         activePlaybackFile = nil
         activeIncomingReceiptOperations = []
 
-        await apiClient.setBearerToken(nil)
-        if let activePlaybackURL {
-            await mediaPipeline.cleanupTemporaryFiles([activePlaybackURL])
-        }
-        await mediaPipeline.removeAllLocalMedia()
-        try? contactTrustStore.removeAll()
-        try? await messageReplayStore.removeAll()
-        try? await keyManager.removeIdentity()
+        await apiClient.setAuthSession(nil)
+        let failures = await cleanupAllLocalAccountStateWithRetries()
         // Keep RootView on the signed-in surface until all cleanup awaits finish;
         // otherwise SetupView can auto-create a replacement key while reset is
         // still deleting Keychain state.
         currentUser = nil
+
+        if !failures.isEmpty {
+            bootstrapMarkers.markCleanupFailed()
+            needsLocalCleanupRetry = true
+            throw LocalAccountCleanupError(failures: failures)
+        }
+        bootstrapMarkers.discardLegacySession()
+        bootstrapMarkers.completeCleanup()
+        requiresFreshInstallKeychainReset = false
+        needsLocalCleanupRetry = false
     }
 
     private func clearResidualKeychainAfterFreshInstallIfNeeded() async throws {
+        // A migration/readback or restore-validation failure is recoverable
+        // state, not evidence of a reinstall. Do not create replacement keys
+        // over it; require the user's explicit cleanup action first.
+        guard !needsLocalCleanupRetry || requiresFreshInstallKeychainReset else {
+            throw LocalAccountRecoveryRequiredError()
+        }
         guard requiresFreshInstallKeychainReset else {
             return
         }
 
         // UserDefaults is removed by uninstall while Keychain items may remain.
-        // Remove every app-owned identity/trust/replay namespace before creating
-        // a fresh identity so an old verification pin cannot silently reappear.
-        try contactTrustStore.removeAll()
-        try await messageReplayStore.removeAll()
-        try await keyManager.removeIdentity()
-        UserDefaults.standard.set(true, forKey: Self.installMarkerKey)
+        // Remove every app-owned session/identity/trust/replay namespace before
+        // creating a fresh identity so old authority cannot silently reappear.
+        bootstrapMarkers.beginCleanup()
+        let failures = await cleanupAllLocalAccountStateWithRetries()
+        guard failures.isEmpty else {
+            bootstrapMarkers.markCleanupFailed()
+            needsLocalCleanupRetry = true
+            throw LocalAccountCleanupError(failures: failures)
+        }
+        bootstrapMarkers.discardLegacySession()
+        bootstrapMarkers.completeCleanup()
         requiresFreshInstallKeychainReset = false
+        needsLocalCleanupRetry = false
     }
 
-    private func restore(_ persistedSession: PersistedAuthSession) async {
-        guard let relayURL = URL(string: persistedSession.relayBaseURLString) else {
-            return
+    private func ensureAuthenticationBootstrapReadyForMutation() throws {
+        guard !isAuthenticationBootstrapUncertain else {
+            throw AuthenticationBootstrapBlockedError()
         }
-        let restoreGeneration = accountStateGeneration
+    }
 
-        let identityRestored = await perform {
-            guard let identity = try await keyManager.currentIdentity() else {
+    private func loadProtectedAuthenticationRecords() throws -> (
+        session: StoredAuthSession?,
+        pending: PendingRegistrationRecord?
+    ) {
+        let plan = bootstrapMarkers.plan
+        guard plan.permitsProtectedSessionRestore else {
+            throw AuthenticationBootstrapBlockedError()
+        }
+
+        let session = try LocalAccountSessionBootstrap.loadOrMigrate(
+            plan: plan,
+            legacySessionData: bootstrapMarkers.legacySessionData,
+            sessionStore: sessionStore,
+            decodeLegacySession: Self.decodeLegacyPersistedSession
+        ) { verifiedSession in
+            bootstrapMarkers.preserveExistingInstallClassification()
+            preferences.set(verifiedSession.relayBaseURLString, forKey: Self.relayBaseURLKey)
+            bootstrapMarkers.discardLegacySession()
+        }
+        let pending = try pendingRegistrationStore.load()
+        if let session,
+           let pending,
+           !PendingRegistrationRecovery.isCompatible(session, with: pending) {
+            throw AuthSessionStoreError.conflictingRegistrationRecovery
+        }
+        if plan.requiresRegistrationReconciliation,
+           session == nil,
+           pending == nil {
+            throw AuthSessionStoreError.ambiguousRegistrationRecovery
+        }
+        return (session, pending)
+    }
+
+    private func restore(_ persistedSession: StoredAuthSession) async {
+        defer { isRestoringSession = false }
+        let restored = await perform {
+            try await completeProtectedRegistration(
+                persistedSession,
+                requestedUsername: persistedSession.session.user.username,
+                allowsExpiredRecoveryAuthority: true
+            )
+        }
+        if restored {
+            needsAuthenticationRecoveryRetry = false
+        } else {
+            await suspendPublishedAuthenticationForRetry()
+        }
+    }
+
+    private func restorePendingRegistration(_ record: PendingRegistrationRecord) async {
+        defer { isRestoringSession = false }
+        let restored = await perform {
+            try await completePendingRegistration(record)
+        }
+        if restored {
+            needsAuthenticationRecoveryRetry = false
+        } else {
+            await suspendPublishedAuthenticationForRetry()
+        }
+    }
+
+    private func renewSession() async throws -> AuthSession {
+        if let sessionRenewalTask {
+            return try await sessionRenewalTask.value
+        }
+
+        let task = Task { [weak self] () throws -> AuthSession in
+            guard let self else {
+                throw APIClientError.authenticationRecoveryUnavailable
+            }
+            return try await self.performSessionRenewal()
+        }
+        sessionRenewalTask = task
+        do {
+            let session = try await task.value
+            sessionRenewalTask = nil
+            return session
+        } catch {
+            sessionRenewalTask = nil
+            throw error
+        }
+    }
+
+    private func completeProtectedRegistration(
+        _ protectedSession: StoredAuthSession,
+        requestedUsername: String,
+        allowsExpiredRecoveryAuthority: Bool = true,
+        resolvesRegistrationUncertainty: Bool = true
+    ) async throws {
+        let registrationGeneration = accountStateGeneration
+        guard let relayURL = URL(string: protectedSession.relayBaseURLString),
+              RelayURLPolicy.allows(relayURL),
+              relayURL.absoluteString == relayBaseURLString else {
+#if DEBUG
+            throw LocalAccountStateError.disallowedRelayURL(
+                "The protected relay must use HTTPS or a local/private Debug HTTP address."
+            )
+#else
+            throw LocalAccountStateError.disallowedRelayURL(
+                "The protected relay uses HTTP. Public release builds require HTTPS."
+            )
+#endif
+        }
+        guard let identity = try await keyManager.currentIdentity() else {
+            // A protected relay registration must only ever recover against
+            // the exact keys that created it. Generating replacement keys here
+            // would strand the relay account and weaken the recovery boundary.
+            throw DeviceKeyManagerError.identityNotFound
+        }
+        guard accountStateGeneration == registrationGeneration,
+              !isClearingLocalAccountState,
+              storedAuthSession == protectedSession else {
+            throw AuthSessionValidationError.noRecoverableSession
+        }
+        if allowsExpiredRecoveryAuthority {
+            try AuthSessionValidator.validateStoredRecoveryAuthority(
+                protectedSession.session,
+                requestedUsername: requestedUsername,
+                localIdentity: identity
+            )
+        } else {
+            try AuthSessionValidator.validateRegistration(
+                protectedSession.session,
+                requestedUsername: requestedUsername,
+                localIdentity: identity
+            )
+        }
+        await apiClient.updateBaseURL(relayURL)
+        guard accountStateGeneration == registrationGeneration,
+              !isClearingLocalAccountState,
+              storedAuthSession == protectedSession else {
+            throw AuthSessionValidationError.noRecoverableSession
+        }
+        await apiClient.setAuthSession(protectedSession.session)
+        guard accountStateGeneration == registrationGeneration,
+              !isClearingLocalAccountState,
+              storedAuthSession == protectedSession else {
+            await apiClient.setAuthSession(nil)
+            throw AuthSessionValidationError.noRecoverableSession
+        }
+
+        // Do not publish signed-in UI from a stale bearer alone. A successful
+        // protected endpoint either authenticates that bearer or forces the API
+        // client through the signed challenge-renewal path first.
+        _ = try await apiClient.listContacts()
+        guard accountStateGeneration == registrationGeneration,
+              !isClearingLocalAccountState,
+              let activeStoredSession = storedAuthSession,
+              activeStoredSession.relayBaseURLString == protectedSession.relayBaseURLString,
+              PendingRegistrationRecovery.isCompatible(
+                activeStoredSession,
+                with: PendingRegistrationRecord(
+                    relayBaseURLString: protectedSession.relayBaseURLString,
+                    username: requestedUsername,
+                    session: protectedSession.session,
+                    expectedIdentity: PendingRegistrationIdentity(identity)
+                )
+              ) else {
+            await apiClient.setAuthSession(nil)
+            throw AuthSessionValidationError.noRecoverableSession
+        }
+
+        let registeredIdentity: DevicePublicIdentity
+        do {
+            registeredIdentity = try await recoverRegisteredIdentity(
+                identity,
+                for: activeStoredSession.session,
+                allowsExpiredRecoveryAuthority: true
+            )
+        } catch let validationError as AuthSessionValidationError {
+            throw validationError
+        } catch {
+            throw RegistrationRecoveryError.bindingFailed(
+                detail: error.localizedDescription
+            )
+        }
+        guard accountStateGeneration == registrationGeneration,
+              !isClearingLocalAccountState,
+              storedAuthSession == activeStoredSession else {
+            throw AuthSessionValidationError.noRecoverableSession
+        }
+        try AuthSessionValidator.validateLocalIdentity(
+            registeredIdentity,
+            against: activeStoredSession.session
+        )
+        relayBaseURLString = relayURL.absoluteString
+        preferences.set(relayURL.absoluteString, forKey: Self.relayBaseURLKey)
+        currentUser = activeStoredSession.session.user
+        deviceIdentity = registeredIdentity
+        contacts = []
+        conversations = []
+        messagesByContactID = [:]
+        try await refreshLocalState()
+        if resolvesRegistrationUncertainty {
+            bootstrapMarkers.resolveRegistrationUncertainty()
+            needsAuthenticationStorageReload = false
+        }
+    }
+
+    private func recoverRegisteredIdentity(
+        _ identity: DevicePublicIdentity,
+        for session: AuthSession,
+        allowsExpiredRecoveryAuthority: Bool = false
+    ) async throws -> DevicePublicIdentity {
+        if allowsExpiredRecoveryAuthority {
+            try AuthSessionValidator.validateStoredRecoveryAuthority(
+                session,
+                requestedUsername: session.user.username,
+                localIdentity: identity
+            )
+        } else {
+            try AuthSessionValidator.validateRegistration(
+                session,
+                requestedUsername: session.user.username,
+                localIdentity: identity
+            )
+        }
+        if identity.deviceID == nil {
+            let boundIdentity = try await keyManager.bindRegisteredDeviceID(session.device.id)
+            try AuthSessionValidator.validateLocalIdentity(boundIdentity, against: session)
+            return boundIdentity
+        }
+        try AuthSessionValidator.validateLocalIdentity(identity, against: session)
+        return identity
+    }
+
+    private func completePendingRegistration(
+        _ record: PendingRegistrationRecord
+    ) async throws {
+        let registrationGeneration = accountStateGeneration
+        guard pendingRegistration == record,
+              !isClearingLocalAccountState,
+              relayBaseURLString == record.relayBaseURLString else {
+            throw AuthSessionValidationError.noRecoverableSession
+        }
+
+        // An in-memory record can exist only when initial Keychain protection
+        // and server rollback both failed. Verify durable recovery before doing
+        // anything else on retry.
+        try PendingRegistrationPersistence.saveAndVerify(
+            record,
+            in: pendingRegistrationStore
+        )
+        guard accountStateGeneration == registrationGeneration,
+              pendingRegistration == record,
+              !isClearingLocalAccountState else {
+            throw AuthSessionValidationError.noRecoverableSession
+        }
+
+        guard let identity = try await keyManager.currentIdentity() else {
+            throw DeviceKeyManagerError.identityNotFound
+        }
+        try validatePendingRegistrationIdentity(record, against: identity)
+        guard accountStateGeneration == registrationGeneration,
+              pendingRegistration == record,
+              !isClearingLocalAccountState else {
+            throw AuthSessionValidationError.noRecoverableSession
+        }
+
+        let protectedSession: StoredAuthSession
+        if let storedAuthSession {
+            guard PendingRegistrationRecovery.isCompatible(
+                storedAuthSession,
+                with: record
+            ) else {
+                needsAuthenticationStorageReload = true
+                needsAuthenticationRecoveryRetry = false
+                throw AuthSessionStoreError.conflictingRegistrationRecovery
+            }
+            protectedSession = storedAuthSession
+        } else {
+            protectedSession = record.storedSession
+            try ProtectedAuthSessionPersistence.saveAndVerify(
+                protectedSession,
+                in: sessionStore
+            )
+            storedAuthSession = protectedSession
+        }
+
+        try await completeProtectedRegistration(
+            protectedSession,
+            requestedUsername: record.username,
+            allowsExpiredRecoveryAuthority: true,
+            resolvesRegistrationUncertainty: false
+        )
+        guard accountStateGeneration == registrationGeneration,
+              pendingRegistration == record,
+              !isClearingLocalAccountState,
+              let activeStoredSession = storedAuthSession,
+              PendingRegistrationRecovery.isCompatible(activeStoredSession, with: record) else {
+            throw AuthSessionValidationError.noRecoverableSession
+        }
+        try PendingRegistrationPersistence.removeAndVerify(from: pendingRegistrationStore)
+        pendingRegistration = nil
+        bootstrapMarkers.resolveRegistrationUncertainty()
+        needsAuthenticationStorageReload = false
+    }
+
+    private func validatePendingRegistrationIdentity(
+        _ record: PendingRegistrationRecord,
+        against identity: DevicePublicIdentity
+    ) throws {
+        guard identity.deviceID == nil || identity.deviceID == record.session.device.id,
+              record.expectedIdentity.deviceID == nil
+                || record.expectedIdentity.deviceID == record.session.device.id,
+              AuthSessionValidator.identitiesMatch(identity, session: record.session),
+              AuthSessionValidator.identitiesMatch(
+                record.expectedIdentity.publicIdentityForValidation,
+                session: record.session
+              ) else {
+            throw AuthSessionValidationError.identityMismatch
+        }
+    }
+
+    private func suspendPublishedAuthenticationForRetry() async {
+        needsAuthenticationRecoveryRetry = !needsAuthenticationStorageReload
+            && (storedAuthSession != nil || pendingRegistration != nil)
+        stopRemotePolling()
+        currentUser = nil
+        deviceIdentity = nil
+        contacts = []
+        contactTrustAssessments = [:]
+        conversations = []
+        messagesByContactID = [:]
+        await apiClient.setAuthSession(nil)
+    }
+
+    private func recordAuthenticationRecoveryFailure(_ error: Error) {
+        if let storeError = error as? AuthSessionStoreError,
+           case .conflictingRegistrationRecovery = storeError {
+            needsAuthenticationStorageReload = true
+            needsAuthenticationRecoveryRetry = false
+        } else {
+            needsAuthenticationRecoveryRetry = true
+        }
+    }
+
+    private func performSessionRenewal() async throws -> AuthSession {
+        guard !isClearingLocalAccountState,
+              let previousStoredSession = storedAuthSession,
+              let relayURL = URL(string: previousStoredSession.relayBaseURLString),
+              RelayURLPolicy.allows(relayURL),
+              relayURL.absoluteString == relayBaseURLString else {
+            throw AuthSessionValidationError.noRecoverableSession
+        }
+        let renewalGeneration = accountStateGeneration
+        let identity: DevicePublicIdentity
+        if let deviceIdentity {
+            identity = deviceIdentity
+        } else {
+            guard let storedIdentity = try await keyManager.currentIdentity() else {
                 throw DeviceKeyManagerError.identityNotFound
             }
-            guard accountStateGeneration == restoreGeneration,
-                  !isClearingLocalAccountState else {
-                throw ContactMessagingSecurityError.localIdentityMismatch
-            }
-            try validateLocalIdentity(identity, against: persistedSession.session)
-            currentUser = persistedSession.session.user
-            deviceIdentity = identity
+            identity = storedIdentity
         }
-        guard accountStateGeneration == restoreGeneration,
-              !isClearingLocalAccountState else {
-            return
-        }
-        guard identityRestored else {
-            await apiClient.setBearerToken(nil)
-            UserDefaults.standard.removeObject(forKey: Self.persistedSessionKey)
-            currentUser = nil
-            deviceIdentity = nil
-            contacts = []
-            contactTrustAssessments = [:]
-            conversations = []
-            messagesByContactID = [:]
-            return
-        }
-
-        await apiClient.updateBaseURL(relayURL)
-        guard accountStateGeneration == restoreGeneration,
-              !isClearingLocalAccountState else {
-            return
-        }
-        await apiClient.setBearerToken(persistedSession.session.bearerToken)
-        guard accountStateGeneration == restoreGeneration,
-              !isClearingLocalAccountState else {
-            await apiClient.setBearerToken(nil)
-            return
-        }
-        await perform {
-            try await refreshLocalState()
-        }
-    }
-
-    private func validateRegistrationSession(
-        _ session: AuthSession,
-        requestedUsername: String,
-        localIdentity: DevicePublicIdentity
-    ) throws {
-        guard session.user.username == requestedUsername,
-              session.device.userID == session.user.id,
-              localIdentity.deviceID == nil || localIdentity.deviceID == session.device.id,
-              timingSafeEquals(localIdentity.encryptionPublicKey, session.device.encryptionPublicKey),
-              timingSafeEquals(localIdentity.signingPublicKey, session.device.signingPublicKey) else {
-            throw ContactMessagingSecurityError.localIdentityMismatch
-        }
-    }
-
-    private func validateLocalIdentity(
-        _ identity: DevicePublicIdentity,
-        against session: AuthSession
-    ) throws {
-        guard session.device.userID == session.user.id,
-              identity.deviceID == session.device.id,
-              timingSafeEquals(identity.encryptionPublicKey, session.device.encryptionPublicKey),
-              timingSafeEquals(identity.signingPublicKey, session.device.signingPublicKey) else {
-            throw ContactMessagingSecurityError.localIdentityMismatch
-        }
-    }
-
-    private func timingSafeEquals(_ first: Data, _ second: Data) -> Bool {
-        guard first.count == second.count else {
-            return false
-        }
-        var difference: UInt8 = 0
-        for (left, right) in zip(first, second) {
-            difference |= left ^ right
-        }
-        return difference == 0
-    }
-
-    private func persist(session: AuthSession) {
-        let persistedSession = PersistedAuthSession(
-            relayBaseURLString: relayBaseURLString,
-            session: session
+        try AuthSessionValidator.validateStoredRecoveryAuthority(
+            previousStoredSession.session,
+            requestedUsername: previousStoredSession.session.user.username,
+            localIdentity: identity
         )
-        guard let data = try? Self.sessionEncoder.encode(persistedSession) else {
-            return
+        let deviceID = previousStoredSession.session.device.id
+        let username = previousStoredSession.session.user.username
+
+        let challenge = try await apiClient.requestLoginChallenge(
+            username: username,
+            deviceID: deviceID
+        )
+        try AuthSessionValidator.validateChallenge(challenge)
+        let challengeResponse = try await keyManager.makeLoginChallengeResponse(
+            challenge: challenge.challenge
+        )
+        let renewedSession = try await apiClient.login(
+            username: username,
+            deviceID: deviceID,
+            challengeID: challenge.challengeID,
+            challengeResponse: challengeResponse
+        )
+        try AuthSessionValidator.validateRenewal(
+            renewedSession,
+            replacing: previousStoredSession.session,
+            localIdentity: identity,
+            allowsUnboundLocalIdentity: true
+        )
+        try Task.checkCancellation()
+        guard accountStateGeneration == renewalGeneration,
+              !isClearingLocalAccountState,
+              storedAuthSession == previousStoredSession else {
+            throw AuthSessionValidationError.noRecoverableSession
         }
-        UserDefaults.standard.set(data, forKey: Self.persistedSessionKey)
+
+        let renewedStoredSession = StoredAuthSession(
+            relayBaseURLString: previousStoredSession.relayBaseURLString,
+            session: renewedSession
+        )
+        try ProtectedAuthSessionPersistence.saveAndVerify(
+            renewedStoredSession,
+            in: sessionStore
+        )
+        guard accountStateGeneration == renewalGeneration,
+              !isClearingLocalAccountState,
+              storedAuthSession == previousStoredSession else {
+            throw AuthSessionValidationError.noRecoverableSession
+        }
+        storedAuthSession = renewedStoredSession
+        return renewedSession
+    }
+
+    private func cleanupProtectedAccountStateWithRetries() async -> [LocalCleanupFailure] {
+        var failures: [LocalCleanupFailure] = []
+        if let failure = await retryCleanup(
+            label: "pending relay registration",
+            operation: { try pendingRegistrationStore.remove() }
+        ) {
+            failures.append(failure)
+        }
+        if let failure = await retryCleanup(
+            label: "protected relay session",
+            operation: { try sessionStore.remove() }
+        ) {
+            failures.append(failure)
+        }
+        if let failure = await retryCleanup(
+            label: "contact verification pins",
+            operation: { try contactTrustStore.removeAll() }
+        ) {
+            failures.append(failure)
+        }
+        if let failure = await retryCleanup(
+            label: "message replay receipts",
+            operation: { try await messageReplayStore.removeAll() }
+        ) {
+            failures.append(failure)
+        }
+        if let failure = await retryCleanup(
+            label: "device identity",
+            operation: { try await keyManager.removeIdentity() }
+        ) {
+            failures.append(failure)
+        }
+        return failures
+    }
+
+    private func cleanupAllLocalAccountStateWithRetries() async -> [LocalCleanupFailure] {
+        var failures = await cleanupProtectedAccountStateWithRetries()
+        if let mediaFailure = await retryCleanup(
+            label: "encrypted local media",
+            operation: { try await mediaPipeline.removeAllLocalMedia() }
+        ) {
+            failures.append(mediaFailure)
+        }
+        return failures
+    }
+
+    private func retryCleanup(
+        label: String,
+        attempts: Int = 3,
+        operation: () async throws -> Void
+    ) async -> LocalCleanupFailure? {
+        var latestError: Error?
+        for attempt in 1...attempts {
+            do {
+                try await operation()
+                return nil
+            } catch {
+                latestError = error
+                if attempt < attempts {
+                    try? await Task.sleep(nanoseconds: UInt64(attempt) * 100_000_000)
+                }
+            }
+        }
+        return LocalCleanupFailure(
+            label: label,
+            detail: latestError?.localizedDescription ?? "unknown failure"
+        )
     }
 
     private func persistRelayBaseURLString() {
-        guard var persistedSession = Self.loadPersistedSession() else {
-            return
-        }
-        persistedSession.relayBaseURLString = relayBaseURLString
-        guard let data = try? Self.sessionEncoder.encode(persistedSession) else {
-            return
-        }
-        UserDefaults.standard.set(data, forKey: Self.persistedSessionKey)
+        preferences.set(relayBaseURLString, forKey: Self.relayBaseURLKey)
     }
 
-    private static func loadPersistedSession() -> PersistedAuthSession? {
-        guard let data = UserDefaults.standard.data(forKey: persistedSessionKey) else {
-            return nil
-        }
-        return try? sessionDecoder.decode(PersistedAuthSession.self, from: data)
+    private static func decodeLegacyPersistedSession(_ data: Data) throws -> StoredAuthSession {
+        let legacySession = try sessionDecoder.decode(LegacyPersistedAuthSession.self, from: data)
+        return StoredAuthSession(
+            relayBaseURLString: legacySession.relayBaseURLString,
+            session: legacySession.session
+        )
     }
 
     private static var bundledDefaultRelayURL: URL {
+        let fallback: URL
+#if DEBUG
+        fallback = localDefaultRelayURL
+#else
+        fallback = publicDefaultRelayURL
+#endif
         guard let value = Bundle.main.object(forInfoDictionaryKey: "KithraDefaultRelayURL") as? String else {
-            return localDefaultRelayURL
+            return fallback
         }
 
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, !trimmed.contains("$("), let url = URL(string: trimmed) else {
-            return localDefaultRelayURL
+        guard !trimmed.isEmpty,
+              !trimmed.contains("$("),
+              let url = URL(string: trimmed),
+              RelayURLPolicy.allows(url) else {
+            return fallback
         }
         return url
     }
-
-    private static let sessionEncoder: JSONEncoder = {
-        let encoder = JSONEncoder()
-        encoder.dateEncodingStrategy = .iso8601
-        return encoder
-    }()
 
     private static let sessionDecoder: JSONDecoder = {
         let decoder = JSONDecoder()
@@ -1734,9 +2786,88 @@ final class AppState: ObservableObject {
     }()
 }
 
-private struct PersistedAuthSession: Codable, Hashable {
+private struct LegacyPersistedAuthSession: Codable, Hashable {
     var relayBaseURLString: String
     var session: AuthSession
+}
+
+private struct LocalCleanupFailure: Hashable {
+    var label: String
+    var detail: String
+}
+
+private struct LocalAccountCleanupError: Error, LocalizedError {
+    var failures: [LocalCleanupFailure]
+
+    var errorDescription: String? {
+        let details = failures.map { "\($0.label): \($0.detail)" }.joined(separator: "; ")
+        return "Local account cleanup is incomplete. Retry before creating new keys. \(details)"
+    }
+}
+
+private struct LocalAccountRecoveryRequiredError: Error, LocalizedError {
+    var errorDescription: String? {
+        "Protected account recovery is incomplete. Retry local cleanup before creating replacement device keys."
+    }
+}
+
+enum LocalRegistrationResetConfirmation: Equatable {
+    case eraseProtectedLocalAccount
+}
+
+private struct AuthenticationBootstrapBlockedError: Error, LocalizedError {
+    var errorDescription: String? {
+        "Protected authentication storage or account recovery is not yet reconciled. Reload protected storage or retry recovery before changing the relay, creating keys, or registering."
+    }
+}
+
+private enum RegistrationRecoveryError: Error, LocalizedError {
+    case usernameMismatch(expected: String)
+    case bindingFailed(detail: String)
+    case rollbackFailed(persistenceDetail: String, rollbackDetail: String)
+    case rollbackCleanupFailed(persistenceDetail: String, cleanupDetail: String)
+
+    var errorDescription: String? {
+        switch self {
+        case .usernameMismatch(let expected):
+            return "Finish recovering the protected registration for \(expected) before using another username."
+        case .bindingFailed(let detail):
+            return "The relay registration is protected in Keychain, but Kithra could not finish binding this device (\(detail)). Retry Register with the same username or relaunch Kithra."
+        case .rollbackFailed(let persistenceDetail, let rollbackDetail):
+            return "Kithra could not protect the new relay session (\(persistenceDetail)) or roll the registration back (\(rollbackDetail)). Keep Kithra open and retry Register with the same username; no second relay account will be created."
+        case .rollbackCleanupFailed(let persistenceDetail, let cleanupDetail):
+            return "Kithra rolled back the relay registration after Keychain protection failed (\(persistenceDetail)), but local authority cleanup is incomplete (\(cleanupDetail)). Retry local cleanup before registering again."
+        }
+    }
+}
+
+private struct DefinitiveUploadLocalCleanupError: Error, LocalizedError {
+    var uploadDetail: String
+    var cleanupDetail: String
+
+    var errorDescription: String? {
+        "\(uploadDetail) Kithra could not remove the rejected local sender copy: \(cleanupDetail). Retry local cleanup before sending it again."
+    }
+}
+
+private struct MediaSendPlaintextCleanupError: Error, LocalizedError {
+    var sendDetail: String
+    var cleanupDetail: String
+
+    var errorDescription: String? {
+        "\(sendDetail) Plaintext cleanup also failed: \(cleanupDetail)"
+    }
+}
+
+private enum LocalAccountStateError: Error, LocalizedError {
+    case disallowedRelayURL(String)
+
+    var errorDescription: String? {
+        switch self {
+        case .disallowedRelayURL(let message):
+            return message
+        }
+    }
 }
 
 private struct IncomingMessageSecurityContext {

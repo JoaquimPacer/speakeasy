@@ -273,17 +273,36 @@ blockers, and unverified assumptions.
   release, privacy, and export-compliance decisions.
 - 2026-08-04: Joaquim selected a Codex-led implementation/review workflow,
   retained all owner-only release gates, and selected iPhone-only for V1.
+- 2026-08-09: Live App Store Connect state was verified. The local Apple
+  Distribution identity is valid; version `1.0` uses manual release; public
+  distribution and the free price are saved; availability covers 174
+  storefronts with France explicitly unavailable pending encryption clearance;
+  and Mac and Apple Vision Pro compatibility are disabled. Builds 1 through 4
+  exist, but build 4 reports non-exempt encryption as `No` and supports both
+  iPhone and iPad. No existing build is the V1 candidate, and no build is
+  attached to version `1.0`. Screenshots, metadata, privacy, age rating,
+  content rights, trader status, and App Review contact remain incomplete.
 
 ## Open Placeholders
 
 - Public relay: `api.joaquimpacer.com`; the previously deployed HTTPS relay must
   be updated to the exact integrated release candidate before submission.
-- Public support/privacy hostname: `kithra.joaquimpacer.com`; DNS/public
-  reachability must be restored and verified before submission.
+- Public support/privacy hostname: `kithra.jqinnovation.com` is recommended,
+  pending Joaquim's approval; DNS, TLS, deployment, and public reachability are
+  not yet verified.
 - CI provider: default GitHub Actions macOS unless Xcode Cloud is clearly easier.
 - APNs key: create after core local message flow works.
 - DigitalOcean deployment: active, but the integrated relay version is not yet
   deployed.
-- Auth after app restart: the scaffold persists its bearer session in
-  `UserDefaults`, but expiring challenge issuance/verification, secure token
-  storage, renewal, and invalidation are still needed before public release.
+- Auth after app restart: the public-release candidate implements expiring,
+  single-use Ed25519 login challenges, 30-day sessions, proactive/401 renewal,
+  and device-bound iOS Keychain storage. Unsigned app/test builds and the relay
+  tests pass. A 2026-08-09 audit found that first registration still needs a
+  durable pre-request intent and a known client-generated device ID so a lost
+  committed response can recover through the existing signed-login challenge;
+  that narrow registration-protocol change awaits Joaquim's explicit approval.
+  Client-side fail-closed bootstrap/recovery UI and one-flight serialized
+  registration are implemented with focused XCTest coverage. Public release
+  remains blocked on the owner-gated registration-protocol change above, the
+  legacy server-session rollout decision, and runtime verification in CI or on
+  a functioning simulator.

@@ -57,21 +57,24 @@ speakeasy/
 
 ## Server Responsibilities
 
-- Register devices and issue the current bearer sessions. Expiring
-  challenge-response login is required before public release but is not yet
-  implemented.
+- Register devices, issue expiring bearer sessions, and verify single-use
+  device-signed login challenges without receiving a private key.
 - Store public device keys and never store private keys.
 - Create and accept contact invites.
 - Store encrypted blobs until verified recipient cache; each blob also records
-  an expiry, but automatic expiry cleanup is a public-release blocker and is not
-  yet enforced.
+  an expiry. The candidate runs retry-safe cleanup at startup and hourly.
+  Deploying that candidate, which activates deletion on the live relay, remains
+  an explicit owner-gated action.
 - Track metadata-only delivery and watched status.
 - Support block/report metadata without receiving plaintext content.
 - Support foreground polling today; content-blind APNs is a post-V1 follow-up.
 
 ## iOS Responsibilities
 
-- Generate and store private keys in Keychain.
+- Generate and store private keys and relay bearer authority in separate,
+  device-bound Keychain items.
+- Renew rejected or nearly expired sessions with the protected signing key and
+  reject any response whose user, device ID, or public keys changed.
 - Record video with AVFoundation.
 - Compress/transcode before encryption.
 - Encrypt media with libsodium before upload.

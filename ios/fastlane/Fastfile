@@ -1,12 +1,16 @@
 require "shellwords"
+require "cfpropertylist"
 
 opt_out_usage
 default_platform(:ios)
 
 INTERNAL_TESTFLIGHT_GROUP = "Kithra Internal"
 FRANCE_TERRITORY_ID = "FRA"
+INTERNAL_TESTFLIGHT_CONFIRMATION_ENV = "KITHRA_INTERNAL_TESTFLIGHT_CONFIRM"
+INTERNAL_TESTFLIGHT_CONFIRMATION_VALUE = "I_CONFIRM_INTERNAL_TESTFLIGHT_ACTION"
 PUBLIC_CANDIDATE_CONFIRMATION_ENV = "KITHRA_PUBLIC_CANDIDATE_CONFIRM"
 PUBLIC_CANDIDATE_CONFIRMATION_VALUE = "I_CONFIRM_PUBLIC_ELIGIBLE_CANDIDATE"
+PUBLIC_RELAY_URL = "https://api.joaquimpacer.com"
 REPOSITORY_ROOT = File.expand_path("../..", __dir__)
 XCODE_PROJECT = File.expand_path("../Kithra.xcodeproj", __dir__)
 XCODE_PROJECT_FILE = File.join(XCODE_PROJECT, "project.pbxproj")
@@ -24,6 +28,20 @@ def appfile_value(key)
   value = CredentialsManager::AppfileConfig.try_fetch_value(key).to_s.strip
   UI.user_error!("Missing #{key} in ios/fastlane/Appfile") if value.empty?
   value
+end
+
+def ensure_internal_testflight_confirmation!
+  confirmation = ENV[INTERNAL_TESTFLIGHT_CONFIRMATION_ENV].to_s.strip
+  return if confirmation == INTERNAL_TESTFLIGHT_CONFIRMATION_VALUE
+
+  UI.user_error!(
+    "Internal TestFlight signing, upload, and group attachment require an " \
+    "explicit owner gate. Set " \
+    "#{INTERNAL_TESTFLIGHT_CONFIRMATION_ENV}=" \
+    "#{INTERNAL_TESTFLIGHT_CONFIRMATION_VALUE} for this command only. " \
+    "This confirmation does not authorize a public-eligible candidate, " \
+    "external distribution, App Review submission, or public release."
+  )
 end
 
 def ensure_public_candidate_confirmation!
@@ -117,7 +135,9 @@ def next_build_number!(app:, app_version:, local_build_number:)
 end
 
 def beta_resume_command(app_version:, build_number:)
-  "`bundle exec fastlane verify_beta " \
+  "`#{INTERNAL_TESTFLIGHT_CONFIRMATION_ENV}=" \
+    "#{Shellwords.escape(INTERNAL_TESTFLIGHT_CONFIRMATION_VALUE)} " \
+    "bundle exec fastlane verify_beta " \
     "version:#{Shellwords.escape(app_version.to_s)} " \
     "build_number:#{Shellwords.escape(build_number.to_s)}`"
 end
@@ -130,17 +150,81 @@ def public_candidate_resume_command(app_version:, build_number:)
     "build_number:#{Shellwords.escape(build_number.to_s)}`"
 end
 
-def with_precommit_recovery_guidance(app_version:, build_number:, resume_command:)
-  yield
-rescue StandardError
-  UI.important(
-    "The lane stopped before confirming the build-number commit for Kithra " \
-    "#{app_version} (#{build_number}). Do not decrement CURRENT_PROJECT_VERSION " \
-    "or rerun blindly: the upload may have succeeded. Inspect App Store Connect " \
-    "and `git status`. If this exact build exists, keep and commit the bumped " \
-    "project version, then run #{resume_command}. If it does not, first confirm " \
-    "that no reserved build upload exists before retrying."
+def verify_public_candidate_archive!(archive_path:, app_version:, build_number:)
+  app_bundle = File.join(
+    archive_path,
+    "Products",
+    "Applications",
+    "Kithra.app"
   )
+  info_plist_path = File.join(app_bundle, "Info.plist")
+  privacy_manifest_path = File.join(app_bundle, "PrivacyInfo.xcprivacy")
+
+  UI.user_error!("Public-candidate app bundle is missing at #{app_bundle}") unless File.directory?(app_bundle)
+  UI.user_error!("Public-candidate Info.plist is missing at #{info_plist_path}") unless File.file?(info_plist_path)
+  UI.user_error!("Public-candidate privacy manifest is missing at #{privacy_manifest_path}") unless File.file?(privacy_manifest_path)
+
+  plist = CFPropertyList::List.new(file: info_plist_path)
+  info = CFPropertyList.native_types(plist.value)
+  UI.user_error!("Could not parse public-candidate Info.plist") unless info.is_a?(Hash)
+
+  device_family = Array(info["UIDeviceFamily"]).map(&:to_i)
+  unless device_family == [1]
+    UI.user_error!(
+      "Public candidate must be iPhone-only; archive UIDeviceFamily was " \
+      "#{device_family.inspect}, expected [1]."
+    )
+  end
+  unless info["KithraDefaultRelayURL"].to_s == PUBLIC_RELAY_URL
+    UI.user_error!(
+      "Public-candidate relay was #{info["KithraDefaultRelayURL"].inspect}; " \
+      "expected #{PUBLIC_RELAY_URL.inspect}."
+    )
+  end
+  unless info["ITSAppUsesNonExemptEncryption"] == true
+    UI.user_error!(
+      "Public candidate must keep ITSAppUsesNonExemptEncryption=true so " \
+      "App Store Connect asks the owner the export-compliance questions."
+    )
+  end
+  unless info["CFBundleShortVersionString"].to_s == app_version.to_s &&
+         info["CFBundleVersion"].to_s == build_number.to_s
+    UI.user_error!(
+      "Public-candidate archive version/build was " \
+      "#{info["CFBundleShortVersionString"].inspect}/#{info["CFBundleVersion"].inspect}; " \
+      "expected #{app_version.inspect}/#{build_number.inspect}."
+    )
+  end
+
+  UI.success(
+    "Verified public-candidate archive: iPhone-only, privacy manifest bundled, " \
+    "production HTTPS relay selected, and export-compliance questionnaire enabled."
+  )
+end
+
+def with_release_recovery_guidance(app_version:, build_number:, resume_command:)
+  upload_completed = false
+  mark_upload_completed = proc { upload_completed = true }
+  yield mark_upload_completed
+rescue StandardError
+  if upload_completed
+    UI.important(
+      "Kithra #{app_version} (#{build_number}) was already uploaded exactly once. " \
+      "Preserve the bumped CURRENT_PROJECT_VERSION and resolve the reported local " \
+      "or App Store Connect condition. Do not run beta or public_candidate again. " \
+      "The only safe Fastlane continuation for this build is #{resume_command}."
+    )
+  else
+    UI.important(
+      "The lane stopped before App Store Connect confirmed the Kithra " \
+      "#{app_version} (#{build_number}) upload. Do not decrement " \
+      "CURRENT_PROJECT_VERSION or rerun blindly: the upload may still have " \
+      "succeeded. Inspect App Store Connect and `git status`. If this exact build " \
+      "exists, preserve and commit the bumped project version, then continue only " \
+      "with #{resume_command}. If it does not, first confirm that no reserved " \
+      "build upload exists before deciding how to retry."
+    )
+  end
   raise
 end
 
@@ -264,6 +348,7 @@ def find_uploaded_build!(app:, app_version:, build_number:)
     app_id: app.id,
     version: app_version,
     build_number: build_number.to_s,
+    platform: Spaceship::ConnectAPI::Platform::IOS,
     limit: 1
   ).first
   unless build
@@ -361,45 +446,85 @@ platform :ios do
     if resume_command.empty?
       UI.user_error!("Missing exact-build resume command for TestFlight processing")
     end
-    attempt = 1
+    app = find_app!(options[:app_identifier])
+    poll_interval = 30
+    started_at = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+    deadline = started_at + timeout
+    last_status = nil
 
-    begin
-      upload_to_testflight(
-        api_key: options[:api_key],
-        app_identifier: options[:app_identifier],
-        distribute_only: true,
-        app_version: options[:app_version],
+    loop do
+      build = Spaceship::ConnectAPI::Build.all(
+        app_id: app.id,
+        version: options[:app_version],
         build_number: options[:build_number].to_s,
-        distribute_external: false,
-        submit_beta_review: false,
-        skip_submission: true,
-        skip_waiting_for_build_processing: false,
-        wait_processing_interval: 30,
-        wait_processing_timeout_duration: timeout
-      )
-    rescue FastlaneCore::Interface::FastlaneCrash => error
-      raise unless error.message.include?("FastlaneCore::BuildWatcher exceeded")
-
-      if attempt < 2
-        attempt += 1
-        UI.important(
-          "App Store Connect is still processing build #{options[:build_number]}; " \
-          "retrying the processing check without re-uploading the binary."
-        )
-        retry
+        platform: Spaceship::ConnectAPI::Platform::IOS,
+        limit: 1
+      ).first
+      build_state = build&.processing_state
+      beta_detail = build&.build_beta_detail
+      internal_state = beta_detail&.internal_build_state
+      external_state = beta_detail&.external_build_state
+      status = if build.nil?
+                 "not visible in App Store Connect yet"
+               else
+                 "build=#{build_state.inspect}, internal=#{internal_state.inspect}, " \
+                   "external=#{external_state.inspect}"
+               end
+      if status != last_status
+        UI.message("TestFlight processing status for build #{options[:build_number]}: #{status}")
+        last_status = status
       end
 
-      UI.user_error!(
-        "Kithra #{options[:app_version]} (#{options[:build_number]}) was uploaded, " \
-        "but App Store Connect processing timed out after #{attempt} attempts. No " \
-        "binary was re-uploaded. Inspect the build in App Store Connect, then run " \
-        "#{resume_command}."
-      )
+      if build_state == Spaceship::ConnectAPI::Build::ProcessingState::VALID &&
+         beta_detail &&
+         internal_state != Spaceship::ConnectAPI::BuildBetaDetail::InternalState::PROCESSING &&
+         external_state != Spaceship::ConnectAPI::BuildBetaDetail::ExternalState::PROCESSING
+        elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - started_at
+        UI.success(
+          "App Store Connect finished processing Kithra #{options[:app_version]} " \
+          "(#{options[:build_number]}) after #{elapsed.round} seconds."
+        )
+        break
+      end
+
+      failed_states = [
+        Spaceship::ConnectAPI::Build::ProcessingState::FAILED,
+        Spaceship::ConnectAPI::Build::ProcessingState::INVALID
+      ]
+      if failed_states.include?(build_state)
+        UI.user_error!(
+          "App Store Connect ended processing Kithra #{options[:app_version]} " \
+          "(#{options[:build_number]}) with state #{build_state}. No binary was " \
+          "re-uploaded. Inspect App Store Connect before deciding whether to retry."
+        )
+      end
+      if build && ![
+        Spaceship::ConnectAPI::Build::ProcessingState::PROCESSING,
+        Spaceship::ConnectAPI::Build::ProcessingState::VALID
+      ].include?(build_state)
+        UI.user_error!(
+          "App Store Connect returned unknown processing state " \
+          "#{build_state.inspect} for Kithra #{options[:app_version]} " \
+          "(#{options[:build_number]}). No binary was re-uploaded."
+        )
+      end
+
+      remaining = deadline - Process.clock_gettime(Process::CLOCK_MONOTONIC)
+      if remaining <= 0
+        UI.user_error!(
+          "Kithra #{options[:app_version]} (#{options[:build_number]}) was uploaded, " \
+          "but App Store Connect processing did not finish within #{timeout} seconds. " \
+          "No binary was re-uploaded. Inspect the build in App Store Connect, then " \
+          "run #{resume_command}."
+        )
+      end
+      sleep([poll_interval, remaining].min)
     end
   end
 
   desc "Build and upload an internal-only Kithra build to TestFlight"
   lane :beta do
+    ensure_internal_testflight_confirmation!
     ensure_git_status_clean(show_uncommitted_changes: true)
 
     app_identifier = appfile_value(:app_identifier)
@@ -437,11 +562,11 @@ platform :ios do
       "-authenticationKeyIssuerID #{Shellwords.escape(credentials[:issuer_id])}"
     ].join(" ")
 
-    with_precommit_recovery_guidance(
+    with_release_recovery_guidance(
       app_version: app_version,
       build_number: next_build_number,
       resume_command: resume_command
-    ) do
+    ) do |mark_upload_completed|
       increment_build_number(
         build_number: next_build_number,
         skip_info_plist: true,
@@ -477,27 +602,28 @@ platform :ios do
         skip_submission: true,
         skip_waiting_for_build_processing: true,
       )
+      mark_upload_completed.call
 
       git_commit(
         path: [XCODE_PROJECT_FILE],
         message: "chore(ios): bump build number to #{next_build_number}"
       )
-    end
-    ensure_git_status_clean(show_uncommitted_changes: true)
+      ensure_git_status_clean(show_uncommitted_changes: true)
 
-    wait_for_testflight_processing(
-      api_key: api_key,
-      app_identifier: app_identifier,
-      app_version: app_version,
-      build_number: next_build_number,
-      resume_command: resume_command
-    )
-    verify_and_attach_internal_build!(
-      app: app,
-      app_version: app_version,
-      build_number: next_build_number,
-      resume_command: resume_command
-    )
+      wait_for_testflight_processing(
+        api_key: api_key,
+        app_identifier: app_identifier,
+        app_version: app_version,
+        build_number: next_build_number,
+        resume_command: resume_command
+      )
+      verify_and_attach_internal_build!(
+        app: app,
+        app_version: app_version,
+        build_number: next_build_number,
+        resume_command: resume_command
+      )
+    end
   end
 
   desc "Build and upload a public-eligible Kithra candidate without submitting it"
@@ -540,17 +666,21 @@ platform :ios do
       "-authenticationKeyIssuerID #{Shellwords.escape(credentials[:issuer_id])}"
     ].join(" ")
 
-    with_precommit_recovery_guidance(
+    with_release_recovery_guidance(
       app_version: app_version,
       build_number: next_build_number,
       resume_command: resume_command
-    ) do
+    ) do |mark_upload_completed|
       increment_build_number(
         build_number: next_build_number,
         skip_info_plist: true,
         xcodeproj: XCODE_PROJECT
       )
 
+      public_candidate_archive_path = File.join(
+        BUILD_OUTPUT_DIRECTORY,
+        "Kithra-PublicCandidate.xcarchive"
+      )
       ipa_path = build_app(
         project: XCODE_PROJECT,
         scheme: "Kithra",
@@ -558,7 +688,7 @@ platform :ios do
         clean: true,
         output_directory: BUILD_OUTPUT_DIRECTORY,
         output_name: "Kithra-PublicCandidate.ipa",
-        archive_path: File.join(BUILD_OUTPUT_DIRECTORY, "Kithra-PublicCandidate.xcarchive"),
+        archive_path: public_candidate_archive_path,
         export_method: "app-store",
         export_options: {
           # Keep this archive eligible for a later owner-authorized App Review submission.
@@ -569,6 +699,12 @@ platform :ios do
         },
         export_team_id: developer_team_id,
         xcargs: authentication_xcargs
+      )
+
+      verify_public_candidate_archive!(
+        archive_path: public_candidate_archive_path,
+        app_version: app_version,
+        build_number: next_build_number
       )
 
       upload_to_testflight(
@@ -583,26 +719,27 @@ platform :ios do
         # Info.plist is the sole export-compliance declaration (Option B).
         # Do not add a uses_non_exempt_encryption upload override here.
       )
+      mark_upload_completed.call
 
       git_commit(
         path: [XCODE_PROJECT_FILE],
         message: "chore(ios): bump build number to #{next_build_number}"
       )
+      ensure_git_status_clean(show_uncommitted_changes: true)
+      wait_for_testflight_processing(
+        api_key: api_key,
+        app_identifier: app_identifier,
+        app_version: app_version,
+        build_number: next_build_number,
+        resume_command: resume_command
+      )
+      verify_and_attach_internal_build!(
+        app: app,
+        app_version: app_version,
+        build_number: next_build_number,
+        resume_command: resume_command
+      )
     end
-    ensure_git_status_clean(show_uncommitted_changes: true)
-    wait_for_testflight_processing(
-      api_key: api_key,
-      app_identifier: app_identifier,
-      app_version: app_version,
-      build_number: next_build_number,
-      resume_command: resume_command
-    )
-    verify_and_attach_internal_build!(
-      app: app,
-      app_version: app_version,
-      build_number: next_build_number,
-      resume_command: resume_command
-    )
 
     UI.success(
       "Kithra #{app_version} (#{next_build_number}) is public-eligible and attached " \
@@ -659,6 +796,7 @@ platform :ios do
 
   desc "Resume verification and internal distribution for an uploaded Kithra build"
   lane :verify_beta do |options|
+    ensure_internal_testflight_confirmation!
     app_version, build_number = exact_version_and_build!(
       options,
       lane_name: "verify_beta"

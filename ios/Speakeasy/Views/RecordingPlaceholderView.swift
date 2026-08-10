@@ -3,14 +3,15 @@ import UIKit
 
 struct RecordingPlaceholderView: View {
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.scenePhase) private var scenePhase
     @EnvironmentObject private var appState: AppState
     @State private var selectedQuality: DeliveryVideoQuality = .compact480p
     @State private var selectedContactID: UUID?
     @State private var rawVideoURL: URL?
     @State private var activeSendURL: URL?
-    @State private var hasDisappeared = false
     @State private var showingVideoRecorder = false
     @State private var didAutoLaunchRecorder = false
+    @State private var pickerDraftPermit = ForegroundPlaintextPermit()
 
     let contact: Contact?
     var autoLaunchRecorder = false
@@ -162,11 +163,25 @@ struct RecordingPlaceholderView: View {
                     .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
             }
         }
-        .fullScreenCover(isPresented: $showingVideoRecorder, onDismiss: {
-            hasDisappeared = false
-        }) {
+        .fullScreenCover(isPresented: $showingVideoRecorder) {
             VideoRecorderView(
-                onFinish: { url in
+                draftPermit: pickerDraftPermit,
+                stageRecording: { pickerURL, draftPermit in
+                    try appState.mediaPipeline.stagePickerRecording(
+                        from: pickerURL,
+                        permit: draftPermit
+                    )
+                },
+                onFinish: { url, draftPermit in
+                    guard pickerDraftPermit === draftPermit,
+                          draftPermit.isValid,
+                          scenePhase == .active else {
+                        Task {
+                            try? await appState.mediaPipeline
+                                .removePlaintextTemporaryFiles([url])
+                        }
+                        return
+                    }
                     if let previousURL = rawVideoURL,
                        previousURL != url,
                        previousURL != activeSendURL {
@@ -180,19 +195,35 @@ struct RecordingPlaceholderView: View {
                         send(url)
                     }
                 },
-                onCancel: {
+                onCancel: { draftPermit in
+                    guard pickerDraftPermit === draftPermit else {
+                        return
+                    }
                     showingVideoRecorder = false
                 }
             )
             .ignoresSafeArea()
         }
         .onAppear {
-            hasDisappeared = false
             selectedContactID = contact?.contactID ?? selectedContactID ?? appState.contacts.first?.contactID
+            if !pickerDraftPermit.isValid {
+                pickerDraftPermit = ForegroundPlaintextPermit()
+            }
             autoLaunchIfNeeded()
         }
+        .onChange(of: scenePhase) { newPhase in
+            switch newPhase {
+            case .active:
+                if !pickerDraftPermit.isValid {
+                    pickerDraftPermit = ForegroundPlaintextPermit()
+                }
+            case .inactive, .background:
+                invalidatePickerDraft()
+            @unknown default:
+                invalidatePickerDraft()
+            }
+        }
         .onDisappear {
-            hasDisappeared = true
             guard let retainedURL = rawVideoURL,
                   retainedURL != activeSendURL else {
                 return
@@ -225,6 +256,19 @@ struct RecordingPlaceholderView: View {
         }
     }
 
+    private func invalidatePickerDraft() {
+        var cleanupURLs = pickerDraftPermit.invalidate()
+        if let rawVideoURL {
+            cleanupURLs.append(rawVideoURL)
+        }
+        rawVideoURL = nil
+        showingVideoRecorder = false
+
+        Task {
+            try? await appState.mediaPipeline.removePlaintextTemporaryFiles(cleanupURLs)
+        }
+    }
+
     private func send(_ videoURL: URL?) {
         guard let videoURL, let selectedContact else {
             return
@@ -239,11 +283,11 @@ struct RecordingPlaceholderView: View {
             )
             let succeeded = appState.lastErrorMessage == nil
             activeSendURL = nil
-            if succeeded || hasDisappeared {
-                await appState.mediaPipeline.cleanupTemporaryFiles([videoURL])
-                if rawVideoURL == videoURL {
-                    rawVideoURL = nil
-                }
+            // AppState consumes and deletes every raw recording on both success
+            // and failure; retries must begin from a fresh capture, never from
+            // a stale plaintext URL.
+            if rawVideoURL == videoURL {
+                rawVideoURL = nil
             }
             if succeeded {
                 dismiss()
@@ -290,8 +334,10 @@ struct RecordingPlaceholderView_Previews: PreviewProvider {
 }
 
 private struct VideoRecorderView: UIViewControllerRepresentable {
-    var onFinish: (URL) -> Void
-    var onCancel: () -> Void
+    let draftPermit: ForegroundPlaintextPermit
+    var stageRecording: (URL, ForegroundPlaintextPermit) throws -> URL
+    var onFinish: (URL, ForegroundPlaintextPermit) -> Void
+    var onCancel: (ForegroundPlaintextPermit) -> Void
 
     func makeUIViewController(context: Context) -> UIImagePickerController {
         let picker = UIImagePickerController()
@@ -314,14 +360,28 @@ private struct VideoRecorderView: UIViewControllerRepresentable {
     func updateUIViewController(_ uiViewController: UIImagePickerController, context: Context) {}
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(onFinish: onFinish, onCancel: onCancel)
+        Coordinator(
+            draftPermit: draftPermit,
+            stageRecording: stageRecording,
+            onFinish: onFinish,
+            onCancel: onCancel
+        )
     }
 
     final class Coordinator: NSObject, UINavigationControllerDelegate, UIImagePickerControllerDelegate {
-        private let onFinish: (URL) -> Void
-        private let onCancel: () -> Void
+        private let draftPermit: ForegroundPlaintextPermit
+        private let stageRecording: (URL, ForegroundPlaintextPermit) throws -> URL
+        private let onFinish: (URL, ForegroundPlaintextPermit) -> Void
+        private let onCancel: (ForegroundPlaintextPermit) -> Void
 
-        init(onFinish: @escaping (URL) -> Void, onCancel: @escaping () -> Void) {
+        init(
+            draftPermit: ForegroundPlaintextPermit,
+            stageRecording: @escaping (URL, ForegroundPlaintextPermit) throws -> URL,
+            onFinish: @escaping (URL, ForegroundPlaintextPermit) -> Void,
+            onCancel: @escaping (ForegroundPlaintextPermit) -> Void
+        ) {
+            self.draftPermit = draftPermit
+            self.stageRecording = stageRecording
             self.onFinish = onFinish
             self.onCancel = onCancel
         }
@@ -330,27 +390,23 @@ private struct VideoRecorderView: UIViewControllerRepresentable {
             _ picker: UIImagePickerController,
             didFinishPickingMediaWithInfo info: [UIImagePickerController.InfoKey: Any]
         ) {
-            guard let url = info[.mediaURL] as? URL else {
-                onCancel()
+            guard let pickerURL = info[.mediaURL] as? URL else {
+                onCancel(draftPermit)
                 return
             }
 
             do {
-                try FileManager.default.setAttributes(
-                    [.protectionKey: FileProtectionType.complete],
-                    ofItemAtPath: url.path
-                )
-                onFinish(url)
+                let ownedURL = try stageRecording(pickerURL, draftPermit)
+                onFinish(ownedURL, draftPermit)
             } catch {
-                // The picker returns a temporary movie URL. If it cannot be
-                // protected, discard it rather than retaining plaintext media.
-                try? FileManager.default.removeItem(at: url)
-                onCancel()
+                // The pipeline removes the validated picker draft and any
+                // partially staged Kithra-owned file on failure.
+                onCancel(draftPermit)
             }
         }
 
         func imagePickerControllerDidCancel(_ picker: UIImagePickerController) {
-            onCancel()
+            onCancel(draftPermit)
         }
     }
 }

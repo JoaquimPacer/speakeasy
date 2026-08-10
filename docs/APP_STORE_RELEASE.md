@@ -24,6 +24,23 @@ tokens, Apple API keys, or server passwords in this file.
   availability has not yet been configured. Revisit export documentation before
   enabling France because Kithra bundles industry-standard libsodium encryption.
 
+## Verified App Store Connect State (2026-08-09)
+
+- The local Apple Distribution identity is valid. Recheck it immediately before
+  an owner-authorized signed archive.
+- App Store version `1.0` is configured for manual release with public
+  distribution. The free price is saved.
+- Availability is configured for 174 storefronts. France is explicitly **Not
+  Available** pending encryption clearance.
+- Designed-for-iPhone-on-Mac and Apple Vision Pro compatibility are disabled.
+- Builds 1 through 4 exist in App Store Connect. Build 4 reports non-exempt
+  encryption as `No` and supports both iPhone and iPad, so it is not the
+  iPhone-only, questionnaire-triggering V1 candidate. No existing build is the
+  V1 candidate, and no build is attached to version `1.0`.
+- Screenshots, product metadata, App Privacy answers, age rating, content-rights
+  answer, trader status, and App Review contact information remain incomplete.
+  Nothing is ready for App Review submission or release yet.
+
 ## Hosting Decision
 
 The relay is a long-running Go service with SQLite and encrypted blob storage.
@@ -93,12 +110,21 @@ For a trusted tester:
 
 Owner tasks:
 
-- Restore and verify public DNS/TLS for the support and privacy URLs at
-  `kithra.joaquimpacer.com`.
+- Choose and publish a public HTTPS support/privacy hostname.
+  `kithra.jqinnovation.com` is the current recommendation, pending Joaquim's
+  approval, DNS, TLS, deployment, and public verification.
 - Deploy the exact integrated relay version to the existing DigitalOcean host
   only after separate deployment approval.
-- Add and validate the owner-approved privacy manifest, prepare iPhone
-  screenshots, and verify the release archive advertises only iPhone support.
+- Review the bundled privacy manifest, prepare iPhone screenshots, and validate
+  the exact signed archive's privacy report.
+- Apple Distribution signing access was installed and verified on the release
+  Mac on 2026-08-09. Reconfirm the identity immediately before an
+  owner-authorized signed archive; no archive has been signed yet.
+- Restore the private `.p8` file for the active App Store Connect automation key
+  from secure storage, or have Joaquim explicitly authorize an App Manager
+  replacement and revocation of the unusable Admin key. The active key record
+  exists, but its private key is not available to the owner-run Fastlane lane on
+  this Mac.
 - On the next TestFlight upload, expect `Missing Compliance`: Joaquim selected
   the conservative `ITSAppUsesNonExemptEncryption = true` declaration so App
   Store Connect presents its export-compliance questionnaire instead of
@@ -128,8 +154,14 @@ Fastlane is configured under `ios/fastlane/`. From the repository root, ship a
 new internal-only TestFlight build with:
 
 ```sh
-cd ios && bundle exec fastlane beta
+cd ios
+KITHRA_INTERNAL_TESTFLIGHT_CONFIRM=I_CONFIRM_INTERNAL_TESTFLIGHT_ACTION \
+  bundle exec fastlane beta
 ```
+
+The confirmation is an owner gate for internal TestFlight signing, upload, and
+group attachment. It does not authorize a public-eligible candidate, external
+distribution, App Review submission, or public release.
 
 The lane reads the ignored App Store Connect Key ID from
 `secrets/app-store-connect/key-id.txt`, its private key from
@@ -146,11 +178,11 @@ binary exactly once. After App Store Connect accepts the upload, it creates a
 local commit containing only the Xcode build-number bump; the lane never pushes
 that commit, so the operator must push it normally.
 
-Processing is checked separately from upload. Each check waits 30 minutes by
-default and may safely retry once without re-uploading; override the per-attempt
-limit with `TESTFLIGHT_PROCESSING_TIMEOUT_SECONDS`. A final timeout reports that
-the upload succeeded and directs the operator to resume rather than rerun
-`beta`.
+Processing is checked separately from upload. Each lane invocation makes one
+bounded polling attempt of 30 minutes by default; override that per-invocation
+limit with `TESTFLIGHT_PROCESSING_TIMEOUT_SECONDS`. A timeout never re-uploads
+the binary: it reports the exact existing version/build and directs the operator
+to run the matching verification lane instead of rerunning `beta`.
 
 The next build intentionally stops before tester attachment when App Store
 Connect reports `Missing Compliance`. Joaquim must answer the build's export
@@ -159,8 +191,9 @@ upload with:
 
 ```sh
 cd ios
-bundle exec fastlane verify_beta \
-  version:<version> build_number:<build-number>
+KITHRA_INTERNAL_TESTFLIGHT_CONFIRM=I_CONFIRM_INTERNAL_TESTFLIGHT_ACTION \
+  bundle exec fastlane verify_beta \
+    version:<version> build_number:<build-number>
 ```
 
 `verify_beta` waits for the selected uploaded build, reports App Store Connect's
@@ -179,7 +212,10 @@ eligible for a later App Review submission by deliberately omitting
 `testFlightInternalTestingOnly`. It still disables external distribution and
 beta-review submission, attaches only to `Kithra Internal` after export
 compliance clears, and never submits for App Review or releases the app. It has
-not been run from this integration branch.
+not been run from this integration branch. Before upload, it inspects the built
+archive and fails closed unless the app is iPhone-only, contains
+`PrivacyInfo.xcprivacy`, resolves the production HTTPS relay, retains
+`ITSAppUsesNonExemptEncryption = true`, and has the selected version/build.
 
 Running it signs and uploads a binary, so do not invoke it without Joaquim's
 separate approval. The explicit confirmation is an owner gate, not a secret:

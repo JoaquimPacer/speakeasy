@@ -1,6 +1,6 @@
 # Kithra Privacy Policy Draft
 
-Last updated: 2026-08-04
+Last updated: 2026-08-09
 
 Kithra is an encrypted async video messaging app. It is designed so the relay
 server cannot read the contents of your videos.
@@ -19,8 +19,8 @@ Kithra may process:
 - Encrypted video blobs while they are waiting to be downloaded by the
   recipient.
 - IP addresses and basic server logs needed to operate and secure the relay.
-- Block and report metadata, including the selected report reason and any
-  details the reporting user submits.
+- Block and report metadata, including a report reason and app-generated report
+  details. Kithra V1 does not upload decrypted video as part of a report.
 
 ## Video Content
 
@@ -46,14 +46,15 @@ cannot decrypt it.
 ## Retention
 
 The relay records an expiration time for undelivered encrypted blobs, with a
-current default of 7 days. Automatic expiry cleanup is not yet enforced in the
-pre-release relay, so undelivered ciphertext may remain until delivery,
-account deletion, or operator cleanup. Public release is blocked until the
-implementation and this policy agree.
+current default of 7 days. The public-release candidate runs cleanup when the
+relay starts and then periodically, deleting expired encrypted blobs and their
+message metadata. This behavior must still be verified on the exact deployed
+relay before publication.
 
 When a recipient verifies and caches an encrypted message locally, the app
 acknowledges delivery and asks the relay to delete its encrypted blob copy.
-Deletion failure handling is still being hardened before public release.
+If blob deletion fails, the relay preserves the database pointer and returns an
+error so deletion can be retried instead of silently reporting success.
 
 Message metadata may remain on the relay so the app can show conversation
 history, delivery status, and contact state.
@@ -63,15 +64,19 @@ history, delivery status, and contact state.
 You can request account deletion in the app from Settings. Account deletion
 removes the relay account, device/session records, contacts, message metadata,
 and pending encrypted relay blobs associated with the account. The app then
-attempts to clear local encrypted media and device keys from that device;
-failure reporting and real-device verification remain public-release gates.
+clears its protected relay session, local encrypted media, verification pins,
+replay receipts, and device keys from that device. The public-release candidate
+records incomplete local cleanup and retries it after a restart instead of
+silently reporting success. This behavior must still receive owner approval and
+pass real-device deletion and restart-recovery verification before publication.
 
 This does not remove copies of messages already downloaded and stored on another
 recipient's device.
 
 ## Contact
 
-Support: `https://kithra.joaquimpacer.com/support.html`
+Proposed support page (not yet live):
+`https://kithra.jqinnovation.com/support.html`
 
 Email: `support@jqinnovation.com`
 

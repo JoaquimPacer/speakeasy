@@ -2,10 +2,23 @@ package storage
 
 import (
 	"context"
+	"errors"
 	"io"
 	"strings"
 	"testing"
 )
+
+type failingReader struct {
+	didReturnData bool
+}
+
+func (r *failingReader) Read(target []byte) (int, error) {
+	if !r.didReturnData {
+		r.didReturnData = true
+		return copy(target, "partial ciphertext"), nil
+	}
+	return 0, errors.New("injected read failure")
+}
 
 func TestLocalStoreWriteReadDelete(t *testing.T) {
 	ctx := context.Background()
@@ -56,6 +69,22 @@ func TestLocalStoreNestedPathCreatesDirectories(t *testing.T) {
 		t.Fatalf("Read() error = %v", err)
 	}
 	readCloser.Close()
+}
+
+func TestLocalStoreFailedWriteRemovesRegisteredFinalPath(t *testing.T) {
+	ctx := context.Background()
+	store, err := NewLocal(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewLocal() error = %v", err)
+	}
+
+	const key = "messages/failed-write.blob"
+	if err := store.Write(ctx, key, &failingReader{}); err == nil {
+		t.Fatal("Write() error = nil, want injected read failure")
+	}
+	if _, err := store.Read(ctx, key); err == nil {
+		t.Fatal("failed Write() left its final path behind")
+	}
 }
 
 func TestLocalStoreRejectsUnsafePaths(t *testing.T) {

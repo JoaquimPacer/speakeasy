@@ -48,7 +48,7 @@ to store each secret safely.
   - Camera and microphone usage descriptions are required in the iOS app.
   - Push notifications can wait until after the local message flow works.
   - Status: V1 configuration complete with no Apple portal capabilities enabled. Camera and microphone usage descriptions are already present in `ios/Speakeasy/Resources/Info.plist`; push notifications remain deferred.
-- [x] Create App Store Connect API key for CI upload.
+- [ ] Restore App Store Connect API-key access for owner-run upload automation.
   - Store in GitHub Actions or Xcode Cloud secrets.
   - Owner-local `.p8` path: `secrets/app-store-connect/AuthKey_<KEY_ID>.p8`
   - Suggested secret names:
@@ -57,7 +57,30 @@ to store each secret safely.
     - `ASC_KEY_P8_BASE64`
     - `APPLE_TEAM_ID`
     - `IOS_BUNDLE_ID`
-  - Status: Created and downloaded to ignored owner-local `secrets/app-store-connect/` on 2026-05-21. CI secret values are not added yet because no upload workflow consumes them yet.
+  - Status: App Store Connect showed one active Admin team key named
+    `Kithra Fastlane` on 2026-08-09, but its one-time-download `.p8` private-key
+    file was not present in the ignored repository secrets directory or found
+    elsewhere on the release Mac. Joaquim must either restore that exact private
+    key from secure storage or explicitly authorize creating an App Manager
+    replacement and revoking the unusable Admin key. CI secret values remain
+    unset.
+- [x] Install and verify Apple Distribution signing access on the release Mac.
+  - Status: On 2026-08-09, Xcode created an Apple Distribution certificate for
+    team `Y45XWD5PRV`. A read-only Keychain check outside the Codex sandbox
+    reported valid Apple Development and Apple Distribution identities. No
+    archive was signed or uploaded during this verification.
+- [x] Configure the App Store version and distribution shell.
+  - Status: Live App Store Connect state verified on 2026-08-09: version `1.0`
+    uses manual release; public distribution and the free price are saved;
+    availability covers 174 storefronts with France explicitly **Not
+    Available** pending encryption clearance; and Mac and Apple Vision Pro
+    compatibility are disabled. These saved settings do not authorize upload,
+    App Review submission, or release.
+- [ ] Attach an eligible iPhone-only V1 build to App Store version `1.0`.
+  - Status: Builds 1 through 4 exist, but no build is attached. Build 4 reports
+    non-exempt encryption as `No` and supports iPhone and iPad, so it cannot be
+    the iPhone-only V1 candidate that presents the export-compliance
+    questionnaire. No existing build is the V1 candidate.
 - [ ] Create APNs authentication key when push work starts.
   - Store in CI/server secret storage, not in the repo.
   - Suggested secret names:
@@ -136,20 +159,40 @@ to store each secret safely.
 
 - [ ] Draft privacy policy.
   - Must disclose metadata and encrypted content storage accurately.
-  - Status: Draft and static page exist. As of 2026-08-04,
+  - Status: Draft and static page exist. As of 2026-08-09,
     `kithra.joaquimpacer.com` has no public A, AAAA, or CNAME record, so the
-    App Store privacy URL is not reachable.
+    App Store privacy URL is not reachable. `kithra.jqinnovation.com` is the
+    recommended replacement, pending Joaquim's hostname and deployment
+    approval.
 - [ ] Draft support URL/page.
   - Status: Draft and static page exist with `support@jqinnovation.com` and
-    `security@jqinnovation.com`. Restore DNS/TLS and verify the public support
-    URL before submission.
+    `security@jqinnovation.com`. Choose the final hostname, publish over HTTPS,
+    and verify the public support URL before submission.
 - [ ] Add in-app account deletion before public review.
   - Status: Initial authenticated delete-account endpoint and iOS Settings flow added on 2026-05-27. Needs end-to-end real-device verification against the beta HTTPS relay before App Review.
 - [ ] Prepare App Privacy labels.
-  - Status: The first-party app uses app-only `UserDefaults`, but no
-    `PrivacyInfo.xcprivacy` is bundled yet. Add an owner-approved manifest with
-    the applicable required-reason declaration, validate the signed archive's
-    privacy report, and then complete the App Store Connect labels.
+  - Status: An owner-reviewable `PrivacyInfo.xcprivacy` with the applicable
+    first-party `UserDefaults` required-reason declaration is bundled in the
+    app target. Validate the exact signed archive's privacy report, confirm the
+    deployed proxy/log-retention behavior, and then complete the App Store
+    Connect labels.
+- [ ] Complete public App Store metadata and compliance owner decisions.
+  - Status: Working copy, screenshot plan, conservative privacy-label answers,
+    and review notes are in `docs/APP_STORE_METADATA_DRAFT.md`. The free price,
+    public distribution, manual release, 174-storefront availability with
+    France excluded, and disabled Mac/Vision compatibility are saved. Joaquim
+    must still approve the App Review contact, copyright, categories,
+    standard/custom EULA, content rights, age rating, privacy labels, English
+    localization, no-push V1, final copy, and final screenshots.
+- [ ] Declare DSA trader or non-trader status in App Store Connect.
+  - Status: Owner/legal decision pending. Apple requires the declaration even
+    if EU distribution is not selected.
+- [ ] Approve and staff the V1 user-content safety process.
+  - Status: Blocking and metadata-only reporting are implemented, but public
+    acceptable-use/community rules, report categories, operator response
+    workflow, and final App Review explanation remain owner decisions. Review
+    the proposals in `docs/COMMUNITY_GUIDELINES_DRAFT.md` and
+    `docs/ABUSE_RESPONSE_RUNBOOK_DRAFT.md`; they are not approved or published.
 - [ ] Complete encryption export compliance in App Store Connect.
   - Decision: Option B selected by Joaquim on 2026-07-20. The next upload declares
     `ITSAppUsesNonExemptEncryption = true` so App Store Connect presents the

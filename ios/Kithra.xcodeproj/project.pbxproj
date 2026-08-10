@@ -28,11 +28,15 @@
 		A00000000000000000000113 /* MessageReplayStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000214 /* MessageReplayStore.swift */; };
 		A00000000000000000000114 /* ContactSecurityView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000215 /* ContactSecurityView.swift */; };
 		A00000000000000000000115 /* ContactQRCodeScannerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000216 /* ContactQRCodeScannerView.swift */; };
+		A00000000000000000000116 /* AuthSessionStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000217 /* AuthSessionStore.swift */; };
+		A00000000000000000000117 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000218 /* PrivacyInfo.xcprivacy */; };
 		A00000000000000000000302 /* Sodium in Frameworks */ = {isa = PBXBuildFile; productRef = A00000000000000000000301 /* Sodium */; };
 		A00000000000000000000401 /* ProtocolVectorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000411 /* ProtocolVectorTests.swift */; };
 		A00000000000000000000402 /* TrustReplayStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000412 /* TrustReplayStoreTests.swift */; };
 		A00000000000000000000403 /* kithra-identity-v1-message-v2.json in Resources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000413 /* kithra-identity-v1-message-v2.json */; };
 		A00000000000000000000404 /* MediaPipelineStagingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000414 /* MediaPipelineStagingTests.swift */; };
+		A00000000000000000000405 /* AuthenticationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000415 /* AuthenticationTests.swift */; };
+		A00000000000000000000406 /* PlaintextTempFileJanitorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000416 /* PlaintextTempFileJanitorTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -70,10 +74,14 @@
 		A00000000000000000000214 /* MessageReplayStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MessageReplayStore.swift; sourceTree = "<group>"; };
 		A00000000000000000000215 /* ContactSecurityView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContactSecurityView.swift; sourceTree = "<group>"; };
 		A00000000000000000000216 /* ContactQRCodeScannerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContactQRCodeScannerView.swift; sourceTree = "<group>"; };
+		A00000000000000000000217 /* AuthSessionStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AuthSessionStore.swift; sourceTree = "<group>"; };
+		A00000000000000000000218 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; lastKnownFileType = text.xml; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
 		A00000000000000000000411 /* ProtocolVectorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProtocolVectorTests.swift; sourceTree = "<group>"; };
 		A00000000000000000000412 /* TrustReplayStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TrustReplayStoreTests.swift; sourceTree = "<group>"; };
 		A00000000000000000000413 /* kithra-identity-v1-message-v2.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = ../../testdata/protocol/kithra-identity-v1-message-v2.json; sourceTree = "<group>"; };
 		A00000000000000000000414 /* MediaPipelineStagingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MediaPipelineStagingTests.swift; sourceTree = "<group>"; };
+		A00000000000000000000415 /* AuthenticationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AuthenticationTests.swift; sourceTree = "<group>"; };
+		A00000000000000000000416 /* PlaintextTempFileJanitorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlaintextTempFileJanitorTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -148,6 +156,7 @@
 		A00000000000000000000023 /* Crypto */ = {
 			isa = PBXGroup;
 			children = (
+				A00000000000000000000217 /* AuthSessionStore.swift */,
 				A00000000000000000000212 /* ContactTrustStore.swift */,
 				A00000000000000000000211 /* ContactVerification.swift */,
 				A00000000000000000000204 /* DeviceKeyManager.swift */,
@@ -202,6 +211,7 @@
 			children = (
 				A00000000000000000000210 /* Assets.xcassets */,
 				A0000000000000000000020E /* Info.plist */,
+				A00000000000000000000218 /* PrivacyInfo.xcprivacy */,
 			);
 			path = Resources;
 			sourceTree = "<group>";
@@ -209,6 +219,8 @@
 		A00000000000000000000029 /* KithraTests */ = {
 			isa = PBXGroup;
 			children = (
+				A00000000000000000000415 /* AuthenticationTests.swift */,
+				A00000000000000000000416 /* PlaintextTempFileJanitorTests.swift */,
 				A00000000000000000000411 /* ProtocolVectorTests.swift */,
 				A00000000000000000000412 /* TrustReplayStoreTests.swift */,
 				A00000000000000000000413 /* kithra-identity-v1-message-v2.json */,
@@ -308,6 +320,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				A0000000000000000000010F /* Assets.xcassets in Resources */,
+				A00000000000000000000117 /* PrivacyInfo.xcprivacy in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -329,6 +342,7 @@
 				A00000000000000000000101 /* SpeakeasyAPIClient.swift in Sources */,
 				A00000000000000000000102 /* AppState.swift in Sources */,
 				A00000000000000000000103 /* SpeakeasyApp.swift in Sources */,
+				A00000000000000000000116 /* AuthSessionStore.swift in Sources */,
 				A00000000000000000000104 /* DeviceKeyManager.swift in Sources */,
 				A00000000000000000000110 /* ContactVerification.swift in Sources */,
 				A00000000000000000000111 /* ContactTrustStore.swift in Sources */,
@@ -353,6 +367,8 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				A00000000000000000000405 /* AuthenticationTests.swift in Sources */,
+				A00000000000000000000406 /* PlaintextTempFileJanitorTests.swift in Sources */,
 				A00000000000000000000401 /* ProtocolVectorTests.swift in Sources */,
 				A00000000000000000000402 /* TrustReplayStoreTests.swift in Sources */,
 				A00000000000000000000404 /* MediaPipelineStagingTests.swift in Sources */,

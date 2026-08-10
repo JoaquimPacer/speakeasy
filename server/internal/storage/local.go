@@ -53,38 +53,41 @@ func (s *LocalStore) Write(ctx context.Context, key string, data io.Reader) erro
 	if err != nil {
 		return err
 	}
-	if _, err := os.Stat(fullPath); err == nil {
-		return fmt.Errorf("blob %q already exists", key)
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return err
-	}
-
 	if err := os.MkdirAll(filepath.Dir(fullPath), 0o700); err != nil {
 		return fmt.Errorf("create blob directory: %w", err)
 	}
 
-	tempFile, err := os.CreateTemp(filepath.Dir(fullPath), "."+filepath.Base(fullPath)+".*.tmp")
+	// The API durably registers this final key before Write begins. Writing to
+	// that key directly ensures a process crash leaves a discoverable partial
+	// file instead of an unregistered temporary filename. No reader receives the
+	// key until the complete write and message transaction both succeed.
+	blobFile, err := os.OpenFile(fullPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
-		return fmt.Errorf("create temporary blob: %w", err)
+		if errors.Is(err, os.ErrExist) {
+			return fmt.Errorf("blob %q already exists", key)
+		}
+		return fmt.Errorf("create blob: %w", err)
 	}
 
-	tempPath := tempFile.Name()
 	committed := false
 	defer func() {
 		if !committed {
-			_ = os.Remove(tempPath)
+			_ = blobFile.Close()
+			_ = os.Remove(fullPath)
 		}
 	}()
 
-	if _, err := io.Copy(tempFile, data); err != nil {
-		_ = tempFile.Close()
+	if _, err := io.Copy(blobFile, data); err != nil {
 		return fmt.Errorf("write blob: %w", err)
 	}
-	if err := tempFile.Close(); err != nil {
+	if err := blobFile.Sync(); err != nil {
+		return fmt.Errorf("sync blob: %w", err)
+	}
+	if err := blobFile.Close(); err != nil {
 		return fmt.Errorf("close blob: %w", err)
 	}
-	if err := os.Rename(tempPath, fullPath); err != nil {
-		return fmt.Errorf("commit blob: %w", err)
+	if err := syncDirectoryTree(filepath.Dir(fullPath), s.root); err != nil {
+		return fmt.Errorf("sync blob directory: %w", err)
 	}
 
 	committed = true
@@ -121,7 +124,41 @@ func (s *LocalStore) Delete(ctx context.Context, key string) error {
 	if err := os.Remove(fullPath); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("delete blob: %w", err)
 	}
+	if err := syncDirectoryTree(filepath.Dir(fullPath), s.root); err != nil {
+		return fmt.Errorf("sync blob deletion: %w", err)
+	}
 	return nil
+}
+
+func syncDirectory(directoryPath string) error {
+	directory, err := os.Open(directoryPath)
+	if err != nil {
+		return err
+	}
+	defer directory.Close()
+	return directory.Sync()
+}
+
+func syncDirectoryTree(directoryPath string, root string) error {
+	current := filepath.Clean(directoryPath)
+	root = filepath.Clean(root)
+	relative, err := filepath.Rel(root, current)
+	if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		return fmt.Errorf("blob directory %q is outside storage root %q", directoryPath, root)
+	}
+	for {
+		if err := syncDirectory(current); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		if current == root {
+			return nil
+		}
+		parent := filepath.Dir(current)
+		if parent == current {
+			return fmt.Errorf("blob directory %q is outside storage root %q", directoryPath, root)
+		}
+		current = parent
+	}
 }
 
 func (s *LocalStore) Path(key string) (string, error) {
