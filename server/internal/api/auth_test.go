@@ -142,6 +142,10 @@ func TestLoginRejectsMalformedStoredSigningKeyWithoutPanicking(t *testing.T) {
 }
 
 func TestSharedSwiftSodiumLoginSignatureVector(t *testing.T) {
+	privateSeed, err := base64.StdEncoding.DecodeString("AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=")
+	if err != nil {
+		t.Fatalf("decode private seed: %v", err)
+	}
 	publicKey, err := base64.StdEncoding.DecodeString("A6EHv/POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg=")
 	if err != nil {
 		t.Fatalf("decode public key: %v", err)
@@ -150,12 +154,20 @@ func TestSharedSwiftSodiumLoginSignatureVector(t *testing.T) {
 	if err != nil {
 		t.Fatalf("decode challenge: %v", err)
 	}
-	signature, err := base64.StdEncoding.DecodeString("OL/KHudny/Wvmaw/KEoVz0jxWqfR/NkBZPtvMPzIVDfVAufkIY2h9M8V40Vdb82f880MKWvL4g5nXwIl08UWAg==")
+	signature, err := base64.StdEncoding.DecodeString("poTjVxqtYqlw+YyUnXijeLbYyvPu6JN8SKGVJjPXX8obqhANaB3gh0dNT/tC2xzVWkBA6bGS4mZ/nwRcUvfJAg==")
 	if err != nil {
 		t.Fatalf("decode signature: %v", err)
 	}
 
 	transcript := append([]byte(loginDomain), challenge...)
+	privateKey := ed25519.NewKeyFromSeed(privateSeed)
+	if !bytes.Equal(privateKey.Public().(ed25519.PublicKey), publicKey) {
+		t.Fatal("private seed does not derive the shared public key")
+	}
+	actualSignature := ed25519.Sign(privateKey, transcript)
+	if !bytes.Equal(actualSignature, signature) {
+		t.Fatal("Go signature does not match the shared Swift-Sodium vector")
+	}
 	if !ed25519.Verify(ed25519.PublicKey(publicKey), transcript, signature) {
 		t.Fatal("Go rejected the shared login signature produced by Swift-Sodium")
 	}

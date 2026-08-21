@@ -407,6 +407,8 @@ final class AuthenticationTests: XCTestCase {
             case "/account":
                 deletionAuthorization = request.value(forHTTPHeaderField: "Authorization")
                 return (204, Data())
+            case "/contacts", "/messages":
+                return (200, Data("[]".utf8))
             default:
                 return (404, Data())
             }
@@ -1068,7 +1070,9 @@ final class AuthenticationTests: XCTestCase {
         )
 
         XCTAssertTrue(markers.hasRegistrationUncertainty)
-        try await waitUntil { state.currentUser != nil }
+        try await waitUntil {
+            state.currentUser != nil && !state.isAuthenticationBootstrapUncertain
+        }
         XCTAssertFalse(markers.hasRegistrationUncertainty)
         XCTAssertNil(pendingStore.record)
         XCTAssertFalse(state.isAuthenticationBootstrapUncertain)
@@ -1150,7 +1154,7 @@ final class AuthenticationTests: XCTestCase {
             base64Encoded: "oKGio6SlpqeoqaqrrK2ur7CxsrO0tba3uLm6u7y9vr8="
         ))
         let expectedSignature = try XCTUnwrap(Data(
-            base64Encoded: "OL/KHudny/Wvmaw/KEoVz0jxWqfR/NkBZPtvMPzIVDfVAufkIY2h9M8V40Vdb82f880MKWvL4g5nXwIl08UWAg=="
+            base64Encoded: "poTjVxqtYqlw+YyUnXijeLbYyvPu6JN8SKGVJjPXX8obqhANaB3gh0dNT/tC2xzVWkBA6bGS4mZ/nwRcUvfJAg=="
         ))
 
         let signature = try KeychainDeviceKeyManager.loginChallengeResponse(
@@ -1514,7 +1518,9 @@ final class AuthenticationTests: XCTestCase {
     private func makeSession(
         deviceID: UUID = UUID(),
         token: String,
-        expiresAt: Date = Date().addingTimeInterval(3_600)
+        expiresAt: Date = Date(
+            timeIntervalSince1970: Date().timeIntervalSince1970.rounded(.down) + 3_600
+        )
     ) -> AuthSession {
         let userID = UUID(uuidString: "11111111-2222-4333-8444-555555555555")!
         let now = Date(timeIntervalSince1970: 1_786_000_000)
