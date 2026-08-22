@@ -119,6 +119,13 @@ struct ConversationTimelineView: View {
             if let inlinePlayback {
                 InlinePlaybackView(
                     file: inlinePlayback.file,
+                    onStarted: {
+                        Task {
+                            await appState.markMessageWatched(
+                                messageID: inlinePlayback.messageID
+                            )
+                        }
+                    },
                     onEnded: {
                         playNextAfterCurrent()
                     }
@@ -1564,11 +1571,18 @@ private struct VideoHistoryTile: View {
 
 private struct InlinePlaybackView: View {
     let file: PlaybackTempFile
+    let onStarted: () -> Void
     let onEnded: () -> Void
     @State private var player: AVPlayer
+    @State private var didNotifyPlaybackStarted = false
 
-    init(file: PlaybackTempFile, onEnded: @escaping () -> Void) {
+    init(
+        file: PlaybackTempFile,
+        onStarted: @escaping () -> Void,
+        onEnded: @escaping () -> Void
+    ) {
         self.file = file
+        self.onStarted = onStarted
         self.onEnded = onEnded
         _player = State(initialValue: AVPlayer(url: file.url))
     }
@@ -1583,12 +1597,31 @@ private struct InlinePlaybackView: View {
             .onDisappear {
                 player.pause()
             }
+            .onReceive(player.publisher(for: \.timeControlStatus)) { status in
+                guard PlaybackStartNotification.shouldNotify(
+                    for: status,
+                    alreadyNotified: didNotifyPlaybackStarted
+                ) else {
+                    return
+                }
+                didNotifyPlaybackStarted = true
+                onStarted()
+            }
             .onReceive(NotificationCenter.default.publisher(
                 for: .AVPlayerItemDidPlayToEndTime,
                 object: player.currentItem
             )) { _ in
                 onEnded()
             }
+    }
+}
+
+enum PlaybackStartNotification {
+    static func shouldNotify(
+        for status: AVPlayer.TimeControlStatus,
+        alreadyNotified: Bool
+    ) -> Bool {
+        status == .playing && !alreadyNotified
     }
 }
 

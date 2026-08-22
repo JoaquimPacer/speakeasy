@@ -1,3 +1,4 @@
+import AVFoundation
 import Foundation
 import Security
 import XCTest
@@ -1265,6 +1266,126 @@ final class AuthenticationTests: XCTestCase {
         budget.includeSegment(durationSeconds: 55)
         XCTAssertEqual(budget.recordedSeconds, 120, accuracy: 0.001)
         XCTAssertEqual(budget.remainingSeconds, 0, accuracy: 0.001)
+    }
+
+    func testPlaybackStartNotificationFiresOnlyOnceWhenPlaybackActuallyStarts() {
+        XCTAssertFalse(PlaybackStartNotification.shouldNotify(
+            for: .paused,
+            alreadyNotified: false
+        ))
+        XCTAssertFalse(PlaybackStartNotification.shouldNotify(
+            for: .waitingToPlayAtSpecifiedRate,
+            alreadyNotified: false
+        ))
+        XCTAssertTrue(PlaybackStartNotification.shouldNotify(
+            for: .playing,
+            alreadyNotified: false
+        ))
+        XCTAssertFalse(PlaybackStartNotification.shouldNotify(
+            for: .playing,
+            alreadyNotified: true
+        ))
+    }
+
+    @MainActor
+    func testMarkMessageWatchedPatchesReceivedMessageAndPreservesLocalMedia() async throws {
+        let encoder = wireEncoder()
+        var requestCount = 0
+        let state = AppState(
+            apiClient: makeAPIClient(token: "preview-token"),
+            seedPreviewData: true
+        )
+        let contactID = try XCTUnwrap(state.contacts.first?.contactID)
+        var received = try XCTUnwrap(
+            state.messagesByContactID[contactID]?.first(where: {
+                $0.recipientID == state.currentUser?.id && $0.status == .delivered
+            })
+        )
+        let packageURL = URL(fileURLWithPath: "/tmp/watched-package-\(UUID().uuidString)")
+        let thumbnailURL = URL(fileURLWithPath: "/tmp/watched-thumbnail-\(UUID().uuidString)")
+        received.localEncryptedPackageURL = packageURL
+        received.localThumbnailURL = thumbnailURL
+        state.messagesByContactID[contactID] = state.messagesByContactID[contactID]?.map {
+            $0.id == received.id ? received : $0
+        }
+
+        AuthenticationURLProtocol.handler = { request in
+            requestCount += 1
+            XCTAssertEqual(request.httpMethod, "PATCH")
+            XCTAssertEqual(
+                request.url?.path,
+                "/messages/\(received.id.uuidString)/status"
+            )
+            let body = try XCTUnwrap(request.bodyDataForTesting())
+            let object = try XCTUnwrap(
+                JSONSerialization.jsonObject(with: body) as? [String: Any]
+            )
+            XCTAssertEqual(object["status"] as? String, MessageStatus.watched.rawValue)
+            var response = received
+            response.status = .watched
+            response.localEncryptedPackageURL = nil
+            response.localThumbnailURL = nil
+            return (200, try encoder.encode(response))
+        }
+
+        await state.markMessageWatched(messageID: received.id)
+
+        XCTAssertEqual(requestCount, 1)
+        let updated = try XCTUnwrap(
+            state.messagesByContactID[contactID]?.first(where: { $0.id == received.id })
+        )
+        XCTAssertEqual(updated.status, .watched)
+        XCTAssertEqual(updated.localEncryptedPackageURL, packageURL)
+        XCTAssertEqual(updated.localThumbnailURL, thumbnailURL)
+    }
+
+    @MainActor
+    func testMarkMessageWatchedRetriesFailureAndRejectsStaleAccountResponse() async throws {
+        let encoder = wireEncoder()
+        var requestCount = 0
+        let gate = RegistrationRequestGate()
+        let state = AppState(
+            apiClient: makeAPIClient(token: "preview-token"),
+            seedPreviewData: true
+        )
+        let contactID = try XCTUnwrap(state.contacts.first?.contactID)
+        let received = try XCTUnwrap(
+            state.messagesByContactID[contactID]?.first(where: {
+                $0.recipientID == state.currentUser?.id && $0.status == .delivered
+            })
+        )
+
+        AuthenticationURLProtocol.handler = { request in
+            requestCount += 1
+            if requestCount == 1 {
+                return (500, Data("retry".utf8))
+            }
+            gate.recordRequestAndWait()
+            var response = received
+            response.status = .watched
+            return (200, try encoder.encode(response))
+        }
+
+        await state.markMessageWatched(messageID: received.id)
+        XCTAssertEqual(requestCount, 1)
+        XCTAssertEqual(
+            state.messagesByContactID[contactID]?.first(where: { $0.id == received.id })?.status,
+            .delivered
+        )
+
+        let retry = Task { @MainActor in
+            await state.markMessageWatched(messageID: received.id)
+        }
+        try await waitUntil { gate.requestCount == 1 }
+        state.currentUser = nil
+        gate.open()
+        await retry.value
+
+        XCTAssertEqual(requestCount, 2)
+        XCTAssertEqual(
+            state.messagesByContactID[contactID]?.first(where: { $0.id == received.id })?.status,
+            .delivered
+        )
     }
 
     func testOnlyKnownLocalAndRelayRejectionsAreDefinitiveUploadFailures() {

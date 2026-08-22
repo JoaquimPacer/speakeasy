@@ -1286,6 +1286,47 @@ final class AppState: ObservableObject {
         return preparedPlaybackFile
     }
 
+    func markMessageWatched(messageID: UUID) async {
+        guard let expectedAuthority = currentRefreshAuthority,
+              let originalLocation = messageLocation(for: messageID),
+              originalLocation.message.recipientID == expectedAuthority.userID,
+              originalLocation.message.status == .delivered else {
+            return
+        }
+
+        let response: Message
+        do {
+            response = try await apiClient.updateMessageStatus(
+                messageID: messageID,
+                status: .watched
+            )
+        } catch {
+            // Watched receipts are best-effort metadata. Playback must remain
+            // available offline, and a later playback start will retry.
+            return
+        }
+
+        guard refreshAuthorityIsCurrent(expectedAuthority),
+              response.id == messageID,
+              response.senderID == originalLocation.message.senderID,
+              response.recipientID == originalLocation.message.recipientID,
+              response.status == .watched,
+              let currentLocation = messageLocation(for: messageID),
+              currentLocation.contactID == originalLocation.contactID,
+              currentLocation.message.senderID == originalLocation.message.senderID,
+              currentLocation.message.recipientID == expectedAuthority.userID,
+              currentLocation.message.status == .delivered else {
+            return
+        }
+
+        // Mutate the authenticated local record instead of publishing the
+        // relay response, whose Codable form intentionally has no local URLs.
+        // This preserves the encrypted package and thumbnail used by playback.
+        var watchedMessage = currentLocation.message
+        watchedMessage.status = .watched
+        upsert(watchedMessage, contactID: currentLocation.contactID)
+    }
+
     private func refreshLocalState() async throws {
         guard let expectedUserID = currentUser?.id,
               let expectedDeviceID = deviceIdentity?.deviceID else {
@@ -2131,6 +2172,15 @@ final class AppState: ObservableObject {
             return message.senderID == currentUserID ? message.recipientID : message.senderID
         }
         return message.senderID
+    }
+
+    private func messageLocation(for messageID: UUID) -> (contactID: UUID, message: Message)? {
+        for (contactID, messages) in messagesByContactID {
+            if let message = messages.first(where: { $0.id == messageID }) {
+                return (contactID, message)
+            }
+        }
+        return nil
     }
 
     private func upsert(_ contact: Contact) {
