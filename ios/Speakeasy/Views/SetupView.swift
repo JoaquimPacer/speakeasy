@@ -62,10 +62,16 @@ struct SetupView: View {
                         }
                     }
                     .disabled(appState.isWorking || appState.isRestoringSession)
-                    Button("Reset this device instead", role: .destructive) {
-                        showingResetRegistrationConfirmation = true
+                    if appState.isPendingRegistrationResetBlocked {
+                        Text("Reset is unavailable while the relay may already have accepted this registration. Kithra must keep this exact signing key until recovery reaches a definitive outcome.")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    } else {
+                        Button("Reset this device instead", role: .destructive) {
+                            showingResetRegistrationConfirmation = true
+                        }
+                        .disabled(appState.isWorking || appState.isRestoringSession)
                     }
-                    .disabled(appState.isWorking || appState.isRestoringSession)
                 } else if let identity = appState.deviceIdentity {
                     LabeledContent("Device", value: identity.deviceID?.uuidString ?? "Ready")
                     LabeledContent("Encryption key", value: "\(identity.encryptionPublicKey.count) bytes")

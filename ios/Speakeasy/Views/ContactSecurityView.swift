@@ -345,6 +345,8 @@ struct ContactTrustBadge: View {
     var body: some View {
         Label(compact ? state.compactBadgeTitle : state.badgeTitle, systemImage: state.badgeSystemImage)
             .font(.caption.weight(.semibold))
+            .lineLimit(1)
+            .fixedSize(horizontal: true, vertical: false)
             .foregroundStyle(state.tint)
             .padding(.horizontal, 10)
             .padding(.vertical, 6)

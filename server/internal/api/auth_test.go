@@ -360,6 +360,7 @@ func TestRegistrationRateLimitUsesDirectPeerByDefault(t *testing.T) {
 	})
 	registerAuthTestIdentity(t, relay.URL, "rate-alice")
 	postJSON(t, relay.URL+"/auth/register", "", registerRequest{
+		DeviceID:            mustID(),
 		Username:            "rate-bob",
 		DeviceName:          "Bob iPhone",
 		EncryptionPublicKey: bytes.Repeat([]byte{0x11}, 32),
@@ -385,6 +386,7 @@ func TestMalformedRegistrationConsumesScopedAllowance(t *testing.T) {
 	doRequest(t, request, http.StatusBadRequest, nil)
 
 	postJSON(t, relay.URL+"/auth/register", "", registerRequest{
+		DeviceID:            mustID(),
 		Username:            "rate-after-malformed",
 		DeviceName:          "Rate iPhone",
 		EncryptionPublicKey: bytes.Repeat([]byte{0x11}, 32),
@@ -417,6 +419,7 @@ func registerAuthTestIdentity(t *testing.T, baseURL string, username string) aut
 	}
 	var session authSessionResponse
 	postJSON(t, baseURL+"/auth/register", "", registerRequest{
+		DeviceID:            mustID(),
 		Username:            username,
 		DeviceName:          username + " iPhone",
 		EncryptionPublicKey: bytes.Repeat([]byte{0x42}, 32),

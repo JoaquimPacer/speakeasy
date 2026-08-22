@@ -43,20 +43,110 @@ struct StoredAuthSession: Codable, Hashable {
     var session: AuthSession
 }
 
-/// Crash-durable authority for a registration that the relay accepted before
-/// the primary session and the registered device ID were both committed
-/// locally. This record never leaves the device Keychain.
+/// Crash-durable authority for a registration attempt. The client-generated
+/// device ID and exact local public identity are protected before the first
+/// relay request, so a lost response can replay the same registration identity
+/// and recover through signed login without creating a second account. This
+/// record never leaves the Keychain.
 struct PendingRegistrationRecord: Codable, Hashable {
     var relayBaseURLString: String
     var username: String
-    var session: AuthSession
+    var deviceID: UUID
+    var deviceName: String?
+    var session: AuthSession?
     var expectedIdentity: PendingRegistrationIdentity
 
-    var storedSession: StoredAuthSession {
-        StoredAuthSession(
+    init(
+        relayBaseURLString: String,
+        username: String,
+        deviceID: UUID,
+        deviceName: String?,
+        session: AuthSession? = nil,
+        expectedIdentity: PendingRegistrationIdentity
+    ) {
+        self.relayBaseURLString = relayBaseURLString
+        self.username = username
+        self.deviceID = deviceID
+        self.deviceName = deviceName
+        self.session = session
+        self.expectedIdentity = expectedIdentity
+    }
+
+    /// Backward-compatible initializer for protected records written by builds
+    /// that persisted only after receiving the relay-generated device ID.
+    init(
+        relayBaseURLString: String,
+        username: String,
+        session: AuthSession,
+        expectedIdentity: PendingRegistrationIdentity
+    ) {
+        self.init(
             relayBaseURLString: relayBaseURLString,
-            session: session
+            username: username,
+            deviceID: session.device.id,
+            deviceName: session.device.name,
+            session: session,
+            expectedIdentity: expectedIdentity
         )
+    }
+
+    var storedSession: StoredAuthSession? {
+        session.map {
+            StoredAuthSession(
+                relayBaseURLString: relayBaseURLString,
+                session: $0
+            )
+        }
+    }
+
+    func completing(with session: AuthSession) -> PendingRegistrationRecord {
+        PendingRegistrationRecord(
+            relayBaseURLString: relayBaseURLString,
+            username: username,
+            deviceID: deviceID,
+            deviceName: deviceName,
+            session: session,
+            expectedIdentity: expectedIdentity
+        )
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case relayBaseURLString
+        case username
+        case deviceID
+        case deviceName
+        case session
+        case expectedIdentity
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        relayBaseURLString = try container.decode(String.self, forKey: .relayBaseURLString)
+        username = try container.decode(String.self, forKey: .username)
+        session = try container.decodeIfPresent(AuthSession.self, forKey: .session)
+        deviceName = try container.decodeIfPresent(String.self, forKey: .deviceName)
+        expectedIdentity = try container.decode(
+            PendingRegistrationIdentity.self,
+            forKey: .expectedIdentity
+        )
+        if let persistedDeviceID = try container.decodeIfPresent(UUID.self, forKey: .deviceID) {
+            deviceID = persistedDeviceID
+        } else if let session {
+            // Older protected records did not encode a top-level device ID,
+            // but their completed session carries the exact same authority.
+            deviceID = session.device.id
+        } else {
+            throw DecodingError.keyNotFound(
+                CodingKeys.deviceID,
+                DecodingError.Context(
+                    codingPath: decoder.codingPath,
+                    debugDescription: "A pending registration intent requires a durable device ID"
+                )
+            )
+        }
+        if !container.contains(.deviceName), let session {
+            deviceName = session.device.name
+        }
     }
 }
 
@@ -165,13 +255,17 @@ enum PendingRegistrationRecovery {
         _ storedSession: StoredAuthSession,
         with record: PendingRegistrationRecord
     ) -> Bool {
+        guard let pendingSession = record.session else {
+            return false
+        }
         let session = storedSession.session
         return storedSession.relayBaseURLString == record.relayBaseURLString
-            && session.user.id == record.session.user.id
+            && session.user.id == pendingSession.user.id
             && session.user.username == record.username
-            && session.device.id == record.session.device.id
-            && session.device.userID == record.session.device.userID
-            && AuthSessionValidator.sessionIdentitiesMatch(session, record.session)
+            && session.device.id == record.deviceID
+            && session.device.id == pendingSession.device.id
+            && session.device.userID == pendingSession.device.userID
+            && AuthSessionValidator.sessionIdentitiesMatch(session, pendingSession)
     }
 }
 
@@ -463,20 +557,30 @@ final class KeychainPendingRegistrationStore: PendingRegistrationStoring {
     }
 
     private static func validate(_ record: PendingRegistrationRecord) throws {
+        let zeroDeviceID = UUID(uuid: (0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0))
         guard let relayURL = URL(string: record.relayBaseURLString),
               relayURL.scheme != nil,
               relayURL.host != nil,
               !record.username.isEmpty,
-              record.username == record.session.user.username,
-              !record.session.bearerToken.isEmpty,
-              record.session.device.userID == record.session.user.id,
+              record.deviceID != zeroDeviceID,
+              record.expectedIdentity.encryptionPublicKey.count == 32,
+              record.expectedIdentity.signingPublicKey.count == 32,
               record.expectedIdentity.deviceID == nil
-                || record.expectedIdentity.deviceID == record.session.device.id,
-              AuthSessionValidator.identitiesMatch(
-                record.expectedIdentity.publicIdentityForValidation,
-                session: record.session
-              ) else {
+                || record.expectedIdentity.deviceID == record.deviceID else {
             throw AuthSessionStoreError.corruptPendingRegistration
+        }
+        if let session = record.session {
+            guard record.username == session.user.username,
+                  !session.bearerToken.isEmpty,
+                  session.device.id == record.deviceID,
+                  session.device.name == record.deviceName,
+                  session.device.userID == session.user.id,
+                  AuthSessionValidator.identitiesMatch(
+                    record.expectedIdentity.publicIdentityForValidation,
+                    session: session
+                  ) else {
+                throw AuthSessionStoreError.corruptPendingRegistration
+            }
         }
     }
 

@@ -58,7 +58,8 @@ final class AuthenticationTests: XCTestCase {
         let record = PendingRegistrationRecord(
             relayBaseURLString: "https://relay.example.test",
             username: session.user.username,
-            session: session,
+            deviceID: session.device.id,
+            deviceName: session.device.name,
             expectedIdentity: PendingRegistrationIdentity(identity)
         )
         try PendingRegistrationPersistence.saveAndVerify(record, in: store)
@@ -79,6 +80,42 @@ final class AuthenticationTests: XCTestCase {
         )
 
         try PendingRegistrationPersistence.removeAndVerify(from: store)
+    }
+
+    func testLegacyPendingRegistrationDecodesDeviceFieldsFromCompletedSession() throws {
+        let session = makeSession(deviceID: UUID(), token: "legacy-pending-token")
+        let identity = DevicePublicIdentity(
+            deviceID: nil,
+            encryptionPublicKey: session.device.encryptionPublicKey,
+            signingPublicKey: session.device.signingPublicKey,
+            createdAt: session.device.createdAt
+        )
+        let legacyRecord = LegacyPendingRegistrationRecord(
+            relayBaseURLString: "https://relay.example.test",
+            username: session.user.username,
+            session: session,
+            expectedIdentity: PendingRegistrationIdentity(identity)
+        )
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .secondsSince1970
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .secondsSince1970
+
+        let decoded = try decoder.decode(
+            PendingRegistrationRecord.self,
+            from: encoder.encode(legacyRecord)
+        )
+
+        XCTAssertEqual(decoded.deviceID, session.device.id)
+        XCTAssertEqual(decoded.deviceName, session.device.name)
+        XCTAssertEqual(decoded.session, session)
+        XCTAssertEqual(
+            decoded.storedSession,
+            StoredAuthSession(
+                relayBaseURLString: legacyRecord.relayBaseURLString,
+                session: session
+            )
+        )
     }
 
     func testLegacySessionWithoutInstallMarkerIsRecoverableUpgrade() throws {
@@ -271,12 +308,23 @@ final class AuthenticationTests: XCTestCase {
         let deviceID = UUID()
         let session = makeSession(deviceID: deviceID, token: "registered-token")
         let encoder = wireEncoder()
+        let pendingStore = InMemoryPendingRegistrationStore()
         var registrationCount = 0
         AuthenticationURLProtocol.handler = { request in
             switch request.url?.path {
             case "/auth/register":
                 registrationCount += 1
-                return (200, try encoder.encode(session))
+                let body = try XCTUnwrap(request.bodyDataForTesting())
+                let object = try XCTUnwrap(
+                    JSONSerialization.jsonObject(with: body) as? [String: Any]
+                )
+                XCTAssertEqual(object["deviceID"] as? String, deviceID.uuidString)
+                XCTAssertEqual(pendingStore.record?.deviceID, deviceID)
+                XCTAssertNil(
+                    pendingStore.record?.session,
+                    "The pre-request intent must be durable before the relay responds"
+                )
+                return (201, try encoder.encode(session))
             case "/contacts", "/messages":
                 return (200, Data("[]".utf8))
             default:
@@ -295,13 +343,13 @@ final class AuthenticationTests: XCTestCase {
             bindFailuresRemaining: 1
         )
         let sessionStore = InMemoryAuthSessionStore()
-        let pendingStore = InMemoryPendingRegistrationStore()
         let state = AppState(
             relayBaseURL: try XCTUnwrap(URL(string: "https://relay.example.test")),
             apiClient: makeAPIClient(token: nil),
             keyManager: keyManager,
             sessionStore: sessionStore,
             pendingRegistrationStore: pendingStore,
+            registrationDeviceIDProvider: { deviceID },
             preferences: preferences,
             seedPreviewData: false
         )
@@ -370,6 +418,7 @@ final class AuthenticationTests: XCTestCase {
             keyManager: keyManager,
             sessionStore: sessionStore,
             pendingRegistrationStore: pendingStore,
+            registrationDeviceIDProvider: { session.device.id },
             preferences: preferences,
             seedPreviewData: false
         )
@@ -390,7 +439,7 @@ final class AuthenticationTests: XCTestCase {
     }
 
     @MainActor
-    func testPendingRegistrationPersistenceFailureRollsBackBeforeRetry() async throws {
+    func testPendingRegistrationPersistenceFailurePreventsRelayRequestUntilRetry() async throws {
         let suiteName = "KithraRegistrationTests.\(UUID().uuidString)"
         let preferences = try XCTUnwrap(UserDefaults(suiteName: suiteName))
         defer { preferences.removePersistentDomain(forName: suiteName) }
@@ -432,21 +481,71 @@ final class AuthenticationTests: XCTestCase {
             keyManager: keyManager,
             sessionStore: sessionStore,
             pendingRegistrationStore: pendingStore,
+            registrationDeviceIDProvider: { session.device.id },
             preferences: preferences,
             seedPreviewData: false
         )
 
         await state.register(username: "alice")
         XCTAssertNil(state.currentUser)
-        XCTAssertEqual(registrationCount, 1)
-        XCTAssertEqual(deletionAuthorization, "Bearer rollback-token")
+        XCTAssertEqual(registrationCount, 0, "No relay request may precede verified intent persistence")
+        XCTAssertNil(deletionAuthorization)
         XCTAssertNil(sessionStore.storedSession)
         XCTAssertNil(pendingStore.record)
 
         pendingStore.saveError = nil
         await state.register(username: "alice")
-        XCTAssertEqual(registrationCount, 2, "A verified rollback permits one clean retry")
+        XCTAssertEqual(registrationCount, 1)
         XCTAssertEqual(state.currentUser, session.user)
+    }
+
+    @MainActor
+    func testRegistrationRejectsRelayResponseForDifferentClientDeviceID() async throws {
+        let suiteName = "KithraRegistrationTests.\(UUID().uuidString)"
+        let preferences = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { preferences.removePersistentDomain(forName: suiteName) }
+        preferences.set(true, forKey: LocalAccountBootstrapMarkers.installMarkerKey)
+
+        let requestedDeviceID = UUID()
+        let mismatchedSession = makeSession(
+            deviceID: UUID(),
+            token: "mismatched-device-token"
+        )
+        let identity = DevicePublicIdentity(
+            deviceID: nil,
+            encryptionPublicKey: mismatchedSession.device.encryptionPublicKey,
+            signingPublicKey: mismatchedSession.device.signingPublicKey,
+            createdAt: mismatchedSession.device.createdAt
+        )
+        let keyManager = RegistrationRecoveryKeyManager(identity: identity)
+        let pendingStore = InMemoryPendingRegistrationStore()
+        let encoder = wireEncoder()
+        AuthenticationURLProtocol.handler = { request in
+            switch request.url?.path {
+            case "/auth/register":
+                return (201, try encoder.encode(mismatchedSession))
+            default:
+                return (404, Data())
+            }
+        }
+        let state = AppState(
+            relayBaseURL: try XCTUnwrap(URL(string: "https://relay.example.test")),
+            apiClient: makeAPIClient(token: nil),
+            keyManager: keyManager,
+            sessionStore: InMemoryAuthSessionStore(),
+            pendingRegistrationStore: pendingStore,
+            registrationDeviceIDProvider: { requestedDeviceID },
+            preferences: preferences,
+            seedPreviewData: false
+        )
+
+        await state.register(username: "alice")
+
+        XCTAssertNil(state.currentUser)
+        XCTAssertEqual(keyManager.bindCallCount, 0)
+        XCTAssertEqual(pendingStore.record?.deviceID, requestedDeviceID)
+        XCTAssertNil(pendingStore.record?.session)
+        XCTAssertTrue(state.needsAuthenticationRecoveryRetry)
     }
 
     @MainActor
@@ -500,7 +599,9 @@ final class AuthenticationTests: XCTestCase {
             seedPreviewData: false
         )
 
-        try await waitUntil { state.currentUser != nil }
+        try await waitUntil {
+            state.currentUser != nil && !state.isRestoringSession
+        }
         XCTAssertEqual(registrationCount, 0)
         XCTAssertEqual(state.currentUser, session.user)
         XCTAssertEqual(state.deviceIdentity?.deviceID, deviceID)
@@ -622,7 +723,9 @@ final class AuthenticationTests: XCTestCase {
             seedPreviewData: false
         )
 
-        try await waitUntil { state.currentUser != nil }
+        try await waitUntil {
+            state.currentUser != nil && !state.isRestoringSession
+        }
         XCTAssertEqual(state.currentUser, renewed.user)
         XCTAssertEqual(
             sessionStore.storedSession,
@@ -747,7 +850,9 @@ final class AuthenticationTests: XCTestCase {
             seedPreviewData: false
         )
 
-        try await waitUntil { state.currentUser != nil }
+        try await waitUntil {
+            state.currentUser != nil && !state.isRestoringSession
+        }
         XCTAssertEqual(state.currentUser, legacy.user)
         XCTAssertEqual(challengeCount, 0)
     }
@@ -785,6 +890,7 @@ final class AuthenticationTests: XCTestCase {
             keyManager: RegistrationRecoveryKeyManager(identity: identity),
             sessionStore: InMemoryAuthSessionStore(),
             pendingRegistrationStore: InMemoryPendingRegistrationStore(),
+            registrationDeviceIDProvider: { session.device.id },
             preferences: preferences,
             seedPreviewData: false
         )
@@ -845,6 +951,7 @@ final class AuthenticationTests: XCTestCase {
             keyManager: RegistrationRecoveryKeyManager(identity: identity),
             sessionStore: sessionStore,
             pendingRegistrationStore: pendingStore,
+            registrationDeviceIDProvider: { session.device.id },
             preferences: preferences,
             seedPreviewData: false
         )
@@ -966,30 +1073,39 @@ final class AuthenticationTests: XCTestCase {
     }
 
     @MainActor
-    func testAmbiguousPersistenceAndRollbackFailureSurvivesRelaunchBlocked() async throws {
+    func testLostRegistrationResponseRetriesSameDurableDeviceIDAcrossRelaunch() async throws {
         let suiteName = "KithraRegistrationTests.\(UUID().uuidString)"
         let preferences = try XCTUnwrap(UserDefaults(suiteName: suiteName))
         defer { preferences.removePersistentDomain(forName: suiteName) }
         preferences.set(true, forKey: LocalAccountBootstrapMarkers.installMarkerKey)
 
-        let session = makeSession(deviceID: UUID(), token: "ambiguous-token")
+        let deviceID = UUID()
+        let recoveredSession = makeSession(deviceID: deviceID, token: "recovered-token")
         let identity = DevicePublicIdentity(
             deviceID: nil,
-            encryptionPublicKey: session.device.encryptionPublicKey,
-            signingPublicKey: session.device.signingPublicKey,
-            createdAt: session.device.createdAt
+            encryptionPublicKey: recoveredSession.device.encryptionPublicKey,
+            signingPublicKey: recoveredSession.device.signingPublicKey,
+            createdAt: recoveredSession.device.createdAt
         )
         let sessionStore = InMemoryAuthSessionStore()
-        let pendingStore = InMemoryPendingRegistrationStore(
-            saveError: AuthenticationTestError.saveFailed
-        )
+        let pendingStore = InMemoryPendingRegistrationStore()
         let encoder = wireEncoder()
+        var observedDeviceIDs: [UUID] = []
+        var generatedDeviceIDCount = 0
         AuthenticationURLProtocol.handler = { request in
             switch request.url?.path {
             case "/auth/register":
-                return (200, try encoder.encode(session))
-            case "/account":
-                return (500, Data("rollback failed".utf8))
+                let body = try XCTUnwrap(request.bodyDataForTesting())
+                let object = try XCTUnwrap(
+                    JSONSerialization.jsonObject(with: body) as? [String: Any]
+                )
+                observedDeviceIDs.append(try XCTUnwrap(
+                    (object["deviceID"] as? String).flatMap(UUID.init(uuidString:))
+                ))
+                XCTAssertEqual(pendingStore.record?.deviceID, deviceID)
+                XCTAssertNil(pendingStore.record?.session)
+                // Model a relay commit whose response never reached the app.
+                throw URLError(.networkConnectionLost)
             default:
                 return (404, Data())
             }
@@ -1001,6 +1117,10 @@ final class AuthenticationTests: XCTestCase {
             keyManager: keyManager,
             sessionStore: sessionStore,
             pendingRegistrationStore: pendingStore,
+            registrationDeviceIDProvider: {
+                generatedDeviceIDCount += 1
+                return deviceID
+            },
             preferences: preferences,
             seedPreviewData: false
         )
@@ -1009,6 +1129,66 @@ final class AuthenticationTests: XCTestCase {
         let markers = LocalAccountBootstrapMarkers(preferences: preferences)
         XCTAssertTrue(markers.hasRegistrationUncertainty)
         XCTAssertTrue(firstLaunch.needsAuthenticationRecoveryRetry)
+        XCTAssertTrue(firstLaunch.isPendingRegistrationResetBlocked)
+        XCTAssertEqual(generatedDeviceIDCount, 1)
+        XCTAssertEqual(pendingStore.record?.deviceID, deviceID)
+        XCTAssertNil(pendingStore.record?.session)
+
+        await firstLaunch.resetLocalRegistration(
+            confirmation: .eraseProtectedLocalAccount
+        )
+        XCTAssertEqual(pendingStore.record?.deviceID, deviceID)
+        XCTAssertEqual(keyManager.removeCallCount, 0)
+        XCTAssertTrue(markers.hasRegistrationUncertainty)
+
+        let challengeID = UUID()
+        let challengeBytes = Data(repeating: 0x42, count: 32)
+        var recoveryPaths: [String] = []
+        AuthenticationURLProtocol.handler = { request in
+            switch request.url?.path {
+            case "/auth/register":
+                recoveryPaths.append("/auth/register")
+                let body = try XCTUnwrap(request.bodyDataForTesting())
+                let object = try XCTUnwrap(
+                    JSONSerialization.jsonObject(with: body) as? [String: Any]
+                )
+                observedDeviceIDs.append(try XCTUnwrap(
+                    (object["deviceID"] as? String).flatMap(UUID.init(uuidString:))
+                ))
+                return (409, Data("registration conflict".utf8))
+            case "/auth/challenge":
+                recoveryPaths.append("/auth/challenge")
+                let body = try XCTUnwrap(request.bodyDataForTesting())
+                let object = try XCTUnwrap(
+                    JSONSerialization.jsonObject(with: body) as? [String: Any]
+                )
+                XCTAssertEqual(object["username"] as? String, "alice")
+                XCTAssertEqual(object["deviceID"] as? String, deviceID.uuidString)
+                return (201, try encoder.encode(LoginChallenge(
+                    challengeID: challengeID,
+                    challenge: challengeBytes,
+                    expiresAt: Date().addingTimeInterval(60)
+                )))
+            case "/auth/login":
+                recoveryPaths.append("/auth/login")
+                let body = try XCTUnwrap(request.bodyDataForTesting())
+                let object = try XCTUnwrap(
+                    JSONSerialization.jsonObject(with: body) as? [String: Any]
+                )
+                XCTAssertEqual(object["username"] as? String, "alice")
+                XCTAssertEqual(object["deviceID"] as? String, deviceID.uuidString)
+                XCTAssertEqual(object["challengeID"] as? String, challengeID.uuidString)
+                XCTAssertEqual(
+                    object["challengeResponse"] as? String,
+                    Data(repeating: 0x24, count: 64).base64EncodedString()
+                )
+                return (200, try encoder.encode(recoveredSession))
+            case "/contacts", "/messages":
+                return (200, Data("[]".utf8))
+            default:
+                return (404, Data())
+            }
+        }
 
         let relaunched = AppState(
             relayBaseURL: try XCTUnwrap(URL(string: "https://relay.example.test")),
@@ -1016,17 +1196,157 @@ final class AuthenticationTests: XCTestCase {
             keyManager: keyManager,
             sessionStore: sessionStore,
             pendingRegistrationStore: pendingStore,
+            registrationDeviceIDProvider: {
+                generatedDeviceIDCount += 1
+                return UUID()
+            },
             preferences: preferences,
             seedPreviewData: false
         )
-        XCTAssertTrue(relaunched.needsAuthenticationStorageReload)
-        XCTAssertTrue(relaunched.isSetupMutationBlocked)
-        XCTAssertNil(relaunched.currentUser)
-        await relaunched.prepareLocalIdentity()
-        XCTAssertEqual(keyManager.loadOrCreateCallCount, 1, "Only the first registration may load existing keys")
-        XCTAssertEqual(sessionStore.removeCallCount, 0)
-        XCTAssertEqual(pendingStore.removeCallCount, 0)
-        XCTAssertTrue(markers.hasRegistrationUncertainty)
+        try await waitUntil {
+            relaunched.currentUser != nil
+                && pendingStore.record == nil
+                && !markers.hasRegistrationUncertainty
+        }
+        XCTAssertEqual(observedDeviceIDs, [deviceID, deviceID])
+        XCTAssertEqual(Set(observedDeviceIDs).count, 1, "A retry must not identify a second relay account")
+        XCTAssertEqual(recoveryPaths, ["/auth/register", "/auth/challenge", "/auth/login"])
+        XCTAssertEqual(generatedDeviceIDCount, 1, "Relaunch recovery must reuse the durable ID")
+        XCTAssertEqual(relaunched.currentUser, recoveredSession.user)
+        XCTAssertEqual(relaunched.deviceIdentity?.deviceID, deviceID)
+        XCTAssertEqual(
+            sessionStore.storedSession,
+            StoredAuthSession(
+                relayBaseURLString: "https://relay.example.test",
+                session: recoveredSession
+            )
+        )
+        XCTAssertNil(pendingStore.record)
+        XCTAssertFalse(markers.hasRegistrationUncertainty)
+    }
+
+    @MainActor
+    func testRegistrationConflictWithoutMatchingDeviceClearsUnusedIntent() async throws {
+        let suiteName = "KithraRegistrationTests.\(UUID().uuidString)"
+        let preferences = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { preferences.removePersistentDomain(forName: suiteName) }
+        preferences.set(true, forKey: LocalAccountBootstrapMarkers.installMarkerKey)
+
+        let deviceID = UUID()
+        let session = makeSession(deviceID: deviceID, token: "unused-token")
+        let identity = DevicePublicIdentity(
+            deviceID: nil,
+            encryptionPublicKey: session.device.encryptionPublicKey,
+            signingPublicKey: session.device.signingPublicKey,
+            createdAt: session.device.createdAt
+        )
+        let pendingStore = InMemoryPendingRegistrationStore()
+        var observedPaths: [String] = []
+        AuthenticationURLProtocol.handler = { request in
+            observedPaths.append(request.url?.path ?? "")
+            switch request.url?.path {
+            case "/auth/register":
+                return (409, Data("username is already taken".utf8))
+            case "/auth/challenge":
+                return (401, Data("invalid login identity".utf8))
+            default:
+                return (404, Data())
+            }
+        }
+        let state = AppState(
+            relayBaseURL: try XCTUnwrap(URL(string: "https://relay.example.test")),
+            apiClient: makeAPIClient(token: nil),
+            keyManager: RegistrationRecoveryKeyManager(identity: identity),
+            sessionStore: InMemoryAuthSessionStore(),
+            pendingRegistrationStore: pendingStore,
+            registrationDeviceIDProvider: { deviceID },
+            preferences: preferences,
+            seedPreviewData: false
+        )
+
+        await state.register(username: "alice")
+
+        XCTAssertEqual(observedPaths, ["/auth/register", "/auth/challenge"])
+        XCTAssertNil(state.currentUser)
+        XCTAssertNil(pendingStore.record)
+        XCTAssertFalse(state.needsAuthenticationRecoveryRetry)
+        XCTAssertFalse(LocalAccountBootstrapMarkers(preferences: preferences).hasRegistrationUncertainty)
+        XCTAssertTrue(state.lastErrorMessage?.contains("HTTP 409") == true)
+    }
+
+    @MainActor
+    func testRegistrationConflictRecoveryRetainsIntentForChallengeAndLoginFailures() async throws {
+        let suiteName = "KithraRegistrationTests.\(UUID().uuidString)"
+        let preferences = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { preferences.removePersistentDomain(forName: suiteName) }
+        preferences.set(true, forKey: LocalAccountBootstrapMarkers.installMarkerKey)
+
+        let deviceID = UUID()
+        let session = makeSession(deviceID: deviceID, token: "unused-token")
+        let identity = DevicePublicIdentity(
+            deviceID: nil,
+            encryptionPublicKey: session.device.encryptionPublicKey,
+            signingPublicKey: session.device.signingPublicKey,
+            createdAt: session.device.createdAt
+        )
+        let pendingStore = InMemoryPendingRegistrationStore()
+        let challenge = LoginChallenge(
+            challengeID: UUID(),
+            challenge: Data(repeating: 0x42, count: 32),
+            expiresAt: Date().addingTimeInterval(60)
+        )
+        let encoder = wireEncoder()
+        var challengeServerFailure = true
+        var observedPaths: [String] = []
+        AuthenticationURLProtocol.handler = { request in
+            observedPaths.append(request.url?.path ?? "")
+            switch request.url?.path {
+            case "/auth/register":
+                return (409, Data("registration conflict".utf8))
+            case "/auth/challenge":
+                if challengeServerFailure {
+                    return (500, Data("temporary failure".utf8))
+                }
+                return (201, try encoder.encode(challenge))
+            case "/auth/login":
+                return (401, Data("invalid or expired login challenge".utf8))
+            default:
+                return (404, Data())
+            }
+        }
+        var generatedDeviceIDCount = 0
+        let state = AppState(
+            relayBaseURL: try XCTUnwrap(URL(string: "https://relay.example.test")),
+            apiClient: makeAPIClient(token: nil),
+            keyManager: RegistrationRecoveryKeyManager(identity: identity),
+            sessionStore: InMemoryAuthSessionStore(),
+            pendingRegistrationStore: pendingStore,
+            registrationDeviceIDProvider: {
+                generatedDeviceIDCount += 1
+                return deviceID
+            },
+            preferences: preferences,
+            seedPreviewData: false
+        )
+
+        await state.register(username: "alice")
+        XCTAssertEqual(observedPaths, ["/auth/register", "/auth/challenge"])
+        XCTAssertEqual(pendingStore.record?.deviceID, deviceID)
+        XCTAssertNil(pendingStore.record?.session)
+        XCTAssertTrue(state.needsAuthenticationRecoveryRetry)
+
+        challengeServerFailure = false
+        await state.register(username: "alice")
+        XCTAssertEqual(
+            observedPaths,
+            ["/auth/register", "/auth/challenge", "/auth/register", "/auth/challenge", "/auth/login"]
+        )
+        XCTAssertEqual(generatedDeviceIDCount, 1)
+        XCTAssertEqual(pendingStore.record?.deviceID, deviceID)
+        XCTAssertNil(pendingStore.record?.session)
+        XCTAssertTrue(state.needsAuthenticationRecoveryRetry)
+        XCTAssertTrue(LocalAccountBootstrapMarkers(preferences: preferences).hasRegistrationUncertainty)
+        XCTAssertTrue(state.lastErrorMessage?.contains("HTTP 401") == true)
     }
 
     @MainActor
@@ -1119,12 +1439,8 @@ final class AuthenticationTests: XCTestCase {
                 tempRoot: mediaRoot.appendingPathComponent("tmp", isDirectory: true),
                 localMediaRoot: mediaRoot.appendingPathComponent("local", isDirectory: true)
             ),
-            contactTrustStore: KeychainContactTrustStore(
-                service: "com.speakeasy.auth-reset.tests.\(UUID().uuidString)"
-            ),
-            messageReplayStore: KeychainMessageReplayStore(
-                service: "com.speakeasy.auth-reset.tests.\(UUID().uuidString)"
-            ),
+            contactTrustStore: EmptyContactTrustStore(),
+            messageReplayStore: EmptyMessageReplayStore(),
             sessionStore: sessionStore,
             pendingRegistrationStore: pendingStore,
             preferences: preferences,
@@ -1393,6 +1709,14 @@ final class AuthenticationTests: XCTestCase {
         XCTAssertTrue(APIClientError.definitiveUploadRejection(413, Data()).uploadWasDefinitelyNotAccepted)
         XCTAssertTrue(APIClientError.definitiveUploadRejection(507, Data()).uploadWasDefinitelyNotAccepted)
         XCTAssertFalse(APIClientError.serverStatus(500, Data()).uploadWasDefinitelyNotAccepted)
+
+        XCTAssertTrue(APIClientError.serverStatus(400, Data()).registrationWasDefinitelyNotAccepted)
+        XCTAssertFalse(APIClientError.serverStatus(409, Data()).registrationWasDefinitelyNotAccepted)
+        XCTAssertFalse(APIClientError.serverStatus(429, Data()).registrationWasDefinitelyNotAccepted)
+        XCTAssertFalse(APIClientError.serverStatus(500, Data()).registrationWasDefinitelyNotAccepted)
+        XCTAssertTrue(APIClientError.serverStatus(409, Data()).registrationRequiresSignedRecovery)
+        XCTAssertFalse(APIClientError.serverStatus(400, Data()).registrationRequiresSignedRecovery)
+        XCTAssertTrue(APIClientError.serverStatus(401, Data()).isUnauthorizedResponse)
     }
 
     func testChallengeAndLoginUseBoundChallengeIDContract() async throws {
@@ -1668,6 +1992,15 @@ final class AuthenticationTests: XCTestCase {
     }
 }
 
+/// Exact JSON shape written by pre-C-REG builds: no durable top-level device
+/// ID or device name, but a completed session from which both can be migrated.
+private struct LegacyPendingRegistrationRecord: Encodable {
+    var relayBaseURLString: String
+    var username: String
+    var session: AuthSession
+    var expectedIdentity: PendingRegistrationIdentity
+}
+
 private final class AuthenticationURLProtocol: URLProtocol {
     static var handler: ((URLRequest) throws -> (status: Int, data: Data))?
 
@@ -1774,6 +2107,81 @@ private enum AuthenticationTestError: Error {
     case bindFailed
     case timeout
     case unsupported
+}
+
+/// This recovery test is about choosing between the two authentication
+/// namespaces. Keep unrelated trust and replay cleanup in memory so an
+/// unsigned simulator build does not turn missing Keychain entitlements into
+/// a false account-recovery failure.
+private final class EmptyContactTrustStore: ContactTrustStoring {
+    func observe(_ context: ContactVerificationContext) throws -> ContactTrustAssessment {
+        ContactTrustAssessment(
+            state: .unverified,
+            candidateIdentity: context.remoteIdentity,
+            trustedIdentity: nil,
+            verificationMethod: nil,
+            verifiedAt: nil
+        )
+    }
+
+    func recordVerification(
+        _ context: ContactVerificationContext,
+        method: ContactVerificationMethod
+    ) throws -> ContactTrustAssessment {
+        ContactTrustAssessment(
+            state: .verified,
+            candidateIdentity: context.remoteIdentity,
+            trustedIdentity: context.remoteIdentity,
+            verificationMethod: method,
+            verifiedAt: Date()
+        )
+    }
+
+    func trustedIdentity(
+        for context: ContactVerificationContext
+    ) throws -> ContactVerificationIdentity? {
+        nil
+    }
+
+    func status(for context: ContactVerificationContext) throws -> ContactTrustState {
+        .unverified
+    }
+
+    func removeContact(_ scope: ContactTrustRemovalScope) throws {}
+    func removeAll() throws {}
+}
+
+private actor EmptyMessageReplayStore: MessageReplayStoring {
+    func reserveNetworkReceipt(
+        clientMessageID: UUID,
+        serverMessageID: UUID,
+        senderIdentityDigest: Data,
+        relayScopeHash: Data,
+        localDeviceID: UUID,
+        authenticatedEnvelopeSignature: Data
+    ) async throws -> MessageReplayReservation {
+        .new
+    }
+
+    func markPendingReceiptCommitted(
+        clientMessageID: UUID,
+        serverMessageID: UUID,
+        senderIdentityDigest: Data,
+        relayScopeHash: Data,
+        localDeviceID: UUID,
+        authenticatedEnvelopeSignature: Data
+    ) async throws {}
+
+    func validateLocalMessage(
+        clientMessageID: UUID,
+        serverMessageID: UUID,
+        senderIdentityDigest: Data,
+        relayScopeHash: Data,
+        localDeviceID: UUID,
+        authenticatedEnvelopeSignature: Data
+    ) async throws {}
+
+    func removeAll() async throws {}
 }
 
 private final class InMemoryAuthSessionStore: AuthSessionStoring {

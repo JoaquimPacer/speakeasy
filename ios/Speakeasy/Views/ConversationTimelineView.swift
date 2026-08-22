@@ -31,6 +31,14 @@ struct ConversationTimelineView: View {
         messages.map(\.id)
     }
 
+    private var isScreenshotPreview: Bool {
+#if DEBUG
+        appState.isScreenshotPreview
+#else
+        false
+#endif
+    }
+
     var body: some View {
         ZStack {
             cameraBackdrop
@@ -67,7 +75,7 @@ struct ConversationTimelineView: View {
             recorder.onFinishedRecording = { url, releaseOwnership in
                 sendRecordedVideo(url, releaseOwnership: releaseOwnership)
             }
-            if scenePhase == .active {
+            if scenePhase == .active, !isScreenshotPreview {
                 recorder.prepare()
             }
         }
@@ -78,7 +86,9 @@ struct ConversationTimelineView: View {
         .onChange(of: scenePhase) { newPhase in
             switch newPhase {
             case .active:
-                recorder.prepare()
+                if !isScreenshotPreview {
+                    recorder.prepare()
+                }
             case .inactive, .background:
                 // Mark the current recording generation discarded before the
                 // capture queue can start or finish another segment.
@@ -97,15 +107,19 @@ struct ConversationTimelineView: View {
             self.inlinePlayback = nil
             selectedMessageID = nil
             playbackRequestID = nil
-            if scenePhase == .active {
+            if scenePhase == .active, !isScreenshotPreview {
                 recorder.prepare()
             }
         }
         .task(id: contact.id) {
-            await appState.refreshQuietly()
+            if !isScreenshotPreview {
+                await appState.refreshQuietly()
+            }
         }
         .sheet(isPresented: $showingContactSecurity, onDismiss: {
-            recorder.prepare()
+            if !isScreenshotPreview {
+                recorder.prepare()
+            }
         }) {
             NavigationStack {
                 ContactSecurityView(contact: currentContact)
@@ -133,12 +147,16 @@ struct ConversationTimelineView: View {
                     .id(inlinePlayback.id)
                     .ignoresSafeArea()
             } else {
-                CameraPreview(session: recorder.session)
-                    .ignoresSafeArea()
-                    .opacity(recorder.isReady ? 1 : 0)
+                if isScreenshotPreview {
+                    screenshotPreviewBackdrop
+                } else {
+                    CameraPreview(session: recorder.session)
+                        .ignoresSafeArea()
+                        .opacity(recorder.isReady ? 1 : 0)
+                }
             }
 
-            if !recorder.isReady, inlinePlayback == nil {
+            if !recorder.isReady, inlinePlayback == nil, !isScreenshotPreview {
                 LinearGradient(
                     colors: [
                         Color.black,
@@ -169,6 +187,43 @@ struct ConversationTimelineView: View {
                     .ignoresSafeArea()
             }
         }
+    }
+
+    private var screenshotPreviewBackdrop: some View {
+        ZStack {
+            LinearGradient(
+                colors: [
+                    Color(red: 0.03, green: 0.05, blue: 0.08),
+                    Color(red: 0.08, green: 0.16, blue: 0.18),
+                    Color(red: 0.10, green: 0.24, blue: 0.21)
+                ],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+
+            Circle()
+                .fill(Color.accentColor.opacity(0.18))
+                .frame(width: 290, height: 290)
+                .blur(radius: 4)
+
+            VStack(spacing: 14) {
+                Image(systemName: "lock.shield.fill")
+                    .font(.system(size: 56, weight: .semibold))
+                    .foregroundStyle(.white.opacity(0.92))
+
+                Text("Private video")
+                    .font(.title2.weight(.semibold))
+                    .foregroundStyle(.white)
+
+                Text("Tap record to send an end-to-end encrypted video.")
+                    .font(.subheadline)
+                    .foregroundStyle(.white.opacity(0.76))
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: 250)
+            }
+            .padding(.bottom, 116)
+        }
+        .ignoresSafeArea()
     }
 
     private var header: some View {
@@ -253,6 +308,9 @@ struct ConversationTimelineView: View {
     private var recordButton: some View {
         Button {
             clearInlinePlayback()
+            guard !isScreenshotPreview else {
+                return
+            }
             recorder.toggleRecording()
         } label: {
             ZStack {
@@ -275,7 +333,7 @@ struct ConversationTimelineView: View {
         .accessibilityLabel(recorder.isRecording ? "Stop recording" : "Record video")
         .accessibilityHint(recordingAccessibilityHint)
         .disabled(
-            !recorder.isReady ||
+            (!recorder.isReady && !isScreenshotPreview) ||
                 appState.isWorking ||
                 (!recorder.isRecording && trustState != .verified)
         )
@@ -375,6 +433,15 @@ struct ConversationTimelineView: View {
     }
 
     private var statusText: String {
+        if isScreenshotPreview {
+            guard let latest = messages.last else {
+                return "Ready"
+            }
+            let prefix = latest.direction(for: appState.currentUser?.id) == .sent
+                ? "Sent"
+                : "Received"
+            return "\(prefix) \(latest.createdAt.relativeShortDisplay)"
+        }
         if let error = recorder.errorMessage {
             return error
         }

@@ -3,6 +3,8 @@ package api
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
+	cryptorand "crypto/rand"
 	"encoding/base64"
 	"encoding/json"
 	"io"
@@ -197,6 +199,7 @@ func TestRegisterValidatesDevicePublicKeys(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			payload := map[string]string{
+				"deviceID":            mustID(),
 				"username":            "key-test-" + strings.ReplaceAll(test.name, " ", "-"),
 				"deviceName":          "test device",
 				"encryptionPublicKey": test.encryptionKey,
@@ -288,6 +291,7 @@ func TestRegisterValidatesUsernameForIdentityVerification(t *testing.T) {
 				target = &session
 			}
 			postJSON(t, relay.URL+"/auth/register", "", registerRequest{
+				DeviceID:            mustID(),
 				Username:            test.username,
 				DeviceName:          "test device",
 				EncryptionPublicKey: validKey,
@@ -310,6 +314,235 @@ func TestRegisterValidatesUsernameForIdentityVerification(t *testing.T) {
 	request := authedRequest(t, http.MethodPost, relay.URL+"/auth/register", "", bytes.NewReader(invalidUTF8Body))
 	request.Header.Set("Content-Type", "application/json")
 	doRequest(t, request, http.StatusBadRequest, nil)
+}
+
+func TestRegisterRetryRequiresPrivateKeyRecovery(t *testing.T) {
+	ctx := context.Background()
+	database, err := db.Open(ctx, ":memory:")
+	if err != nil {
+		t.Fatalf("db.Open() error = %v", err)
+	}
+	t.Cleanup(func() { database.Close() })
+
+	blobStore, err := storage.NewLocal(t.TempDir())
+	if err != nil {
+		t.Fatalf("storage.NewLocal() error = %v", err)
+	}
+
+	relay := httptest.NewServer(NewWithOptions(database, blobStore, Options{
+		RetentionDays:          7,
+		RegistrationRatePerIP:  100,
+		RegistrationRateGlobal: 100,
+	}).Handler())
+	t.Cleanup(relay.Close)
+
+	publicKey, privateKey, err := ed25519.GenerateKey(cryptorand.Reader)
+	if err != nil {
+		t.Fatalf("generate signing key: %v", err)
+	}
+	request := registerRequest{
+		DeviceID:            mustID(),
+		Username:            "retry-alice",
+		DeviceName:          "Alice iPhone",
+		EncryptionPublicKey: bytes.Repeat([]byte{0x31}, 32),
+		SigningPublicKey:    publicKey,
+	}
+	for _, invalidDeviceID := range []string{"", "not-a-uuid", "00000000-0000-0000-0000-000000000000"} {
+		invalid := request
+		invalid.DeviceID = invalidDeviceID
+		postJSON(t, relay.URL+"/auth/register", "", invalid, http.StatusBadRequest, nil)
+	}
+
+	var first authSessionResponse
+	postJSON(t, relay.URL+"/auth/register", "", request, http.StatusCreated, &first)
+	// Simulate a committed registration whose response was lost. Replaying the
+	// public registration fields must not mint a second bearer token.
+	conflictBody := postRegistrationConflict(t, relay.URL, request)
+
+	for table, want := range map[string]int{"users": 1, "devices": 1, "sessions": 1} {
+		var got int
+		if err := database.QueryRowContext(ctx, "SELECT COUNT(*) FROM "+table).Scan(&got); err != nil {
+			t.Fatalf("count %s: %v", table, err)
+		}
+		if got != want {
+			t.Fatalf("%s count = %d, want %d", table, got, want)
+		}
+	}
+
+	// Recovery uses the existing signed challenge flow, so possession of the
+	// device signing private key is required before a fresh session is issued.
+	challenge := requestAuthChallenge(t, relay.URL, request.Username, request.DeviceID, http.StatusCreated)
+	_, wrongPrivateKey, err := ed25519.GenerateKey(cryptorand.Reader)
+	if err != nil {
+		t.Fatalf("generate wrong signing key: %v", err)
+	}
+	loginWithChallenge(
+		t,
+		relay.URL,
+		request.Username,
+		request.DeviceID,
+		challenge.ChallengeID,
+		signLoginChallenge(wrongPrivateKey, challenge.Challenge),
+		http.StatusUnauthorized,
+	)
+	recovered := loginWithChallenge(
+		t,
+		relay.URL,
+		request.Username,
+		request.DeviceID,
+		challenge.ChallengeID,
+		signLoginChallenge(privateKey, challenge.Challenge),
+		http.StatusOK,
+	)
+	if recovered.User != first.User || recovered.Device.ID != first.Device.ID ||
+		recovered.Device.CreatedAt != first.Device.CreatedAt ||
+		!bytes.Equal(recovered.Device.EncryptionPublicKey, first.Device.EncryptionPublicKey) ||
+		!bytes.Equal(recovered.Device.SigningPublicKey, first.Device.SigningPublicKey) {
+		t.Fatalf("recovered session = %+v, want original identity %+v", recovered, first)
+	}
+	if recovered.BearerToken == first.BearerToken {
+		t.Fatal("challenge login reused registration bearer token")
+	}
+	listMessages(t, relay.URL, first.BearerToken)
+	listMessages(t, relay.URL, recovered.BearerToken)
+
+	conflicts := []struct {
+		name    string
+		request registerRequest
+	}{
+		{name: "username", request: func() registerRequest { changed := request; changed.Username = "retry-mallory"; return changed }()},
+		{name: "device name", request: func() registerRequest { changed := request; changed.DeviceName = "Other iPhone"; return changed }()},
+		{name: "encryption key", request: func() registerRequest {
+			changed := request
+			changed.EncryptionPublicKey = bytes.Repeat([]byte{0x41}, 32)
+			return changed
+		}()},
+		{name: "signing key", request: func() registerRequest {
+			changed := request
+			changed.SigningPublicKey = bytes.Repeat([]byte{0x42}, 32)
+			return changed
+		}()},
+		{name: "same username with another device", request: func() registerRequest { changed := request; changed.DeviceID = mustID(); return changed }()},
+	}
+	for _, test := range conflicts {
+		t.Run("rejects conflicting "+test.name, func(t *testing.T) {
+			if got := postRegistrationConflict(t, relay.URL, test.request); got != conflictBody {
+				t.Fatalf("conflict body = %q, want generic %q", got, conflictBody)
+			}
+		})
+	}
+}
+
+func TestConcurrentRegistrationCreatesOneIdentity(t *testing.T) {
+	ctx := context.Background()
+	database, err := db.Open(ctx, ":memory:")
+	if err != nil {
+		t.Fatalf("db.Open() error = %v", err)
+	}
+	t.Cleanup(func() { database.Close() })
+	blobStore, err := storage.NewLocal(t.TempDir())
+	if err != nil {
+		t.Fatalf("storage.NewLocal() error = %v", err)
+	}
+	relay := httptest.NewServer(NewWithOptions(database, blobStore, Options{
+		RetentionDays:          7,
+		RegistrationRatePerIP:  100,
+		RegistrationRateGlobal: 100,
+	}).Handler())
+	t.Cleanup(relay.Close)
+
+	publicKey, privateKey, err := ed25519.GenerateKey(cryptorand.Reader)
+	if err != nil {
+		t.Fatalf("generate signing key: %v", err)
+	}
+	registration := registerRequest{
+		DeviceID:            mustID(),
+		Username:            "concurrent-register",
+		DeviceName:          "Concurrent iPhone",
+		EncryptionPublicKey: bytes.Repeat([]byte{0x51}, 32),
+		SigningPublicKey:    publicKey,
+	}
+	body, err := json.Marshal(registration)
+	if err != nil {
+		t.Fatalf("marshal registration: %v", err)
+	}
+	type result struct {
+		status int
+		body   []byte
+		err    error
+	}
+	start := make(chan struct{})
+	results := make(chan result, 2)
+	for range 2 {
+		go func() {
+			<-start
+			response, requestErr := http.Post(
+				relay.URL+"/auth/register",
+				"application/json",
+				bytes.NewReader(body),
+			)
+			if requestErr != nil {
+				results <- result{err: requestErr}
+				return
+			}
+			defer response.Body.Close()
+			responseBody, readErr := io.ReadAll(response.Body)
+			results <- result{status: response.StatusCode, body: responseBody, err: readErr}
+		}()
+	}
+	close(start)
+
+	createdCount := 0
+	conflictCount := 0
+	var created authSessionResponse
+	for range 2 {
+		result := <-results
+		if result.err != nil {
+			t.Fatalf("concurrent registration: %v", result.err)
+		}
+		switch result.status {
+		case http.StatusCreated:
+			createdCount++
+			if err := json.Unmarshal(result.body, &created); err != nil {
+				t.Fatalf("decode created registration: %v; body = %s", err, result.body)
+			}
+		case http.StatusConflict:
+			conflictCount++
+			if got, want := string(result.body), registrationConflictMessage+"\n"; got != want {
+				t.Fatalf("conflict body = %q, want %q", got, want)
+			}
+		default:
+			t.Fatalf("concurrent registration status = %d, body = %s", result.status, result.body)
+		}
+	}
+	if createdCount != 1 || conflictCount != 1 {
+		t.Fatalf("concurrent results = %d created, %d conflict; want 1 and 1", createdCount, conflictCount)
+	}
+	for table, want := range map[string]int{"users": 1, "devices": 1, "sessions": 1} {
+		var got int
+		if err := database.QueryRowContext(ctx, "SELECT COUNT(*) FROM "+table).Scan(&got); err != nil {
+			t.Fatalf("count %s: %v", table, err)
+		}
+		if got != want {
+			t.Fatalf("%s count = %d, want %d", table, got, want)
+		}
+	}
+
+	challenge := requestAuthChallenge(t, relay.URL, registration.Username, registration.DeviceID, http.StatusCreated)
+	recovered := loginWithChallenge(
+		t,
+		relay.URL,
+		registration.Username,
+		registration.DeviceID,
+		challenge.ChallengeID,
+		signLoginChallenge(privateKey, challenge.Challenge),
+		http.StatusOK,
+	)
+	if recovered.User != created.User || recovered.Device.ID != created.Device.ID ||
+		!bytes.Equal(recovered.Device.SigningPublicKey, created.Device.SigningPublicKey) {
+		t.Fatalf("recovered identity = %+v, want %+v", recovered, created)
+	}
+	listMessages(t, relay.URL, recovered.BearerToken)
 }
 
 func TestUploadRejectsInvalidAuthenticatedEnvelopeBeforeBlobWrite(t *testing.T) {
@@ -1136,6 +1369,7 @@ func registerTestDevice(t *testing.T, baseURL string, username string) authSessi
 
 	var session authSessionResponse
 	postJSON(t, baseURL+"/auth/register", "", registerRequest{
+		DeviceID:            mustID(),
 		Username:            username,
 		DeviceName:          username + " iPhone",
 		EncryptionPublicKey: []byte(strings.Repeat("e", 32)),
@@ -1411,6 +1645,29 @@ func postJSON(t *testing.T, url string, token string, payload any, wantStatus in
 	request := authedRequest(t, http.MethodPost, url, token, bytes.NewReader(body))
 	request.Header.Set("Content-Type", "application/json")
 	doRequest(t, request, wantStatus, target)
+}
+
+func postRegistrationConflict(t *testing.T, baseURL string, payload registerRequest) string {
+	t.Helper()
+	body, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("marshal registration conflict: %v", err)
+	}
+	request := authedRequest(t, http.MethodPost, baseURL+"/auth/register", "", bytes.NewReader(body))
+	request.Header.Set("Content-Type", "application/json")
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatalf("POST registration conflict: %v", err)
+	}
+	defer response.Body.Close()
+	responseBody, err := io.ReadAll(response.Body)
+	if err != nil {
+		t.Fatalf("read registration conflict: %v", err)
+	}
+	if response.StatusCode != http.StatusConflict {
+		t.Fatalf("registration conflict status = %d, want %d; body = %s", response.StatusCode, http.StatusConflict, responseBody)
+	}
+	return string(responseBody)
 }
 
 func authedRequest(t *testing.T, method string, url string, token string, body io.Reader) *http.Request {

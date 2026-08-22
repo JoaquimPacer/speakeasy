@@ -1,5 +1,8 @@
 import Foundation
 import SwiftUI
+#if DEBUG
+import Sodium
+#endif
 
 @MainActor
 final class AppState: ObservableObject {
@@ -56,6 +59,11 @@ final class AppState: ObservableObject {
     private var registrationTask: Task<Void, Never>?
     private var registrationAttemptID: UUID?
     private var registrationAttemptUsername: String?
+    private let registrationDeviceIDProvider: () -> UUID
+#if DEBUG
+    private(set) var isScreenshotPreview: Bool
+    private let screenshotPreviewSigningPrivateKey: Data?
+#endif
 
     var isAuthenticationBootstrapUncertain: Bool {
         needsLocalCleanupRetry
@@ -68,6 +76,14 @@ final class AppState: ObservableObject {
         isWorking || isRegistrationInFlight || isAuthenticationBootstrapUncertain
     }
 
+    /// A first registration with no authenticated response may already exist
+    /// on the relay. Erasing its durable intent and signing key would strand
+    /// that account permanently, so recovery must reach a definitive outcome
+    /// before local reset is allowed.
+    var isPendingRegistrationResetBlocked: Bool {
+        pendingRegistration?.session == nil
+    }
+
     init(
         relayBaseURL: URL? = nil,
         apiClient: SpeakeasyAPIClient? = nil,
@@ -77,12 +93,25 @@ final class AppState: ObservableObject {
         messageReplayStore: MessageReplayStoring = KeychainMessageReplayStore(),
         sessionStore: AuthSessionStoring = KeychainAuthSessionStore(),
         pendingRegistrationStore: PendingRegistrationStoring = KeychainPendingRegistrationStore(),
+        registrationDeviceIDProvider: @escaping () -> UUID = { UUID() },
         preferences: UserDefaults = .standard,
         messageAuthenticator: MessageEnvelopeAuthenticator = MessageEnvelopeAuthenticator(),
         seedPreviewData: Bool = true
     ) {
+#if DEBUG
+        let isScreenshotPreview = ProcessInfo.processInfo.arguments.contains(
+            "--kithra-screenshot-preview"
+        )
+        let screenshotPreviewSigningKeyPair = isScreenshotPreview
+            ? Sodium().sign.keyPair()
+            : nil
+        self.isScreenshotPreview = isScreenshotPreview
+        self.screenshotPreviewSigningPrivateKey = screenshotPreviewSigningKeyPair
+            .map { Data($0.secretKey) }
+#endif
         self.sessionStore = sessionStore
         self.pendingRegistrationStore = pendingRegistrationStore
+        self.registrationDeviceIDProvider = registrationDeviceIDProvider
         self.preferences = preferences
 
         let bootstrapMarkers = LocalAccountBootstrapMarkers(preferences: preferences)
@@ -149,11 +178,26 @@ final class AppState: ObservableObject {
                 ? AuthSessionStoreError.ambiguousRegistrationRecovery
                 : nil)
 
-        let preferredRelayURL = relayBaseURL
+        let preferredRelayURL: URL
+#if DEBUG
+        if isScreenshotPreview {
+            // Screenshot fixtures must never inherit a developer's persisted
+            // localhost relay or contact a relay while presenting sample data.
+            preferredRelayURL = Self.publicDefaultRelayURL
+        } else {
+            preferredRelayURL = relayBaseURL
+                ?? persistedPendingRegistration.flatMap { URL(string: $0.relayBaseURLString) }
+                ?? persistedSession.flatMap { URL(string: $0.relayBaseURLString) }
+                ?? preferences.string(forKey: Self.relayBaseURLKey).flatMap(URL.init(string:))
+                ?? Self.bundledDefaultRelayURL
+        }
+#else
+        preferredRelayURL = relayBaseURL
             ?? persistedPendingRegistration.flatMap { URL(string: $0.relayBaseURLString) }
             ?? persistedSession.flatMap { URL(string: $0.relayBaseURLString) }
             ?? preferences.string(forKey: Self.relayBaseURLKey).flatMap(URL.init(string:))
             ?? Self.bundledDefaultRelayURL
+#endif
         let safeAPIBaseURL = RelayURLPolicy.allows(preferredRelayURL)
             ? preferredRelayURL
             : Self.bundledDefaultRelayURL
@@ -170,11 +214,46 @@ final class AppState: ObservableObject {
             && bootstrapPlan.requiresCleanupBeforeIdentityCreation
 
         if seedPreviewData {
-            let preview = PreviewData.sample
+            var preview = PreviewData.sample
+#if DEBUG
+            if isScreenshotPreview, let signingPublicKey = screenshotPreviewSigningKeyPair
+                .map({ Data($0.publicKey) }) {
+                // Use an ephemeral in-memory signing key so the sample QR is a
+                // genuinely signed payload without reading or writing Keychain.
+                preview.deviceIdentity.signingPublicKey = signingPublicKey
+            }
+#endif
             self.currentUser = preview.currentUser
             self.deviceIdentity = preview.deviceIdentity
             self.contacts = preview.contacts
-            self.contactTrustAssessments = [:]
+            var previewTrustAssessments: [UUID: ContactTrustAssessment] = [:]
+#if DEBUG
+            if isScreenshotPreview {
+                previewTrustAssessments = Dictionary(
+                    uniqueKeysWithValues: preview.contacts.compactMap { contact in
+                        guard let context = try? ContactVerificationContext(
+                            relayURL: safeAPIBaseURL,
+                            localUser: preview.currentUser,
+                            localDeviceIdentity: preview.deviceIdentity,
+                            contact: contact
+                        ) else {
+                            return nil
+                        }
+                        return (
+                            contact.contactID,
+                            ContactTrustAssessment(
+                                state: .verified,
+                                candidateIdentity: context.remoteIdentity,
+                                trustedIdentity: context.remoteIdentity,
+                                verificationMethod: .safetyNumberComparison,
+                                verifiedAt: preview.currentUser.createdAt
+                            )
+                        )
+                    }
+                )
+            }
+#endif
+            self.contactTrustAssessments = previewTrustAssessments
             self.conversations = preview.conversations
             self.messagesByContactID = preview.messagesByContactID
             self.lastInviteCode = nil
@@ -253,6 +332,31 @@ final class AppState: ObservableObject {
     }
 
     func contactVerificationQRCode(for contact: Contact) async -> String? {
+#if DEBUG
+        if isScreenshotPreview,
+           let signingPrivateKey = screenshotPreviewSigningPrivateKey {
+            do {
+                let context = try makeVerificationContext(for: contact)
+                let signingBytes = try ContactVerificationQRPayload.signingBytes(
+                    presenterIdentity: context.localIdentity,
+                    expectedPeerIdentity: context.remoteIdentity
+                )
+                guard let signature = Sodium().sign.signature(
+                    message: Array(signingBytes),
+                    secretKey: Array(signingPrivateKey)
+                ) else {
+                    return nil
+                }
+                return try ContactVerificationQRPayload(
+                    presenterIdentity: context.localIdentity,
+                    expectedPeerIdentity: context.remoteIdentity,
+                    signature: Data(signature)
+                ).encodedString
+            } catch {
+                return nil
+            }
+        }
+#endif
         var encodedPayload: String?
         await perform {
             let context = try makeVerificationContext(for: contact)
@@ -430,89 +534,31 @@ final class AppState: ObservableObject {
         }
         let registrationGeneration = accountStateGeneration
         let registrationRelay = relayBaseURLString
-        let session = try await apiClient.register(
+        let pendingRecord = PendingRegistrationRecord(
+            relayBaseURLString: registrationRelay,
             username: username,
+            deviceID: registrationDeviceIDProvider(),
             deviceName: "Kithra iOS",
-            encryptionPublicKey: identity.encryptionPublicKey,
-            signingPublicKey: identity.signingPublicKey
+            expectedIdentity: PendingRegistrationIdentity(identity)
         )
-
+        // The client-generated device ID and exact registration inputs must be
+        // durable before the relay can commit anything. A timeout or process
+        // death can then replay this same identity and recover through signed
+        // login instead of creating a ghost account with a new device ID.
+        try PendingRegistrationPersistence.saveAndVerify(
+            pendingRecord,
+            in: pendingRegistrationStore
+        )
         guard accountStateGeneration == registrationGeneration,
               !isClearingLocalAccountState,
               relayBaseURLString == registrationRelay,
               let currentIdentity = try await keyManager.currentIdentity(),
               currentIdentity == identity else {
-            throw AuthSessionValidationError.noRecoverableSession
-        }
-        try AuthSessionValidator.validateRegistration(
-            session,
-            requestedUsername: username,
-            localIdentity: currentIdentity
-        )
-        guard accountStateGeneration == registrationGeneration,
-              !isClearingLocalAccountState,
-              relayBaseURLString == registrationRelay else {
-            throw AuthSessionValidationError.noRecoverableSession
-        }
-        let pendingRecord = PendingRegistrationRecord(
-            relayBaseURLString: registrationRelay,
-            username: username,
-            session: session,
-            expectedIdentity: PendingRegistrationIdentity(currentIdentity)
-        )
-        do {
-            try PendingRegistrationPersistence.saveAndVerify(
-                pendingRecord,
-                in: pendingRegistrationStore
-            )
-        } catch {
-            // A failed save may have partially written the pending record. Mark
-            // uncertainty before attempting rollback so a failed rollback is
-            // still fail-closed after process death.
-            let persistenceError = error
-            bootstrapMarkers.markRegistrationUncertain()
-            pendingRegistration = pendingRecord
-            await apiClient.setAuthSession(session)
-            do {
-                try await apiClient.deleteAccount()
-            } catch {
-                await apiClient.setAuthSession(nil)
-                needsAuthenticationRecoveryRetry = true
-                throw RegistrationRecoveryError.rollbackFailed(
-                    persistenceDetail: persistenceError.localizedDescription,
-                    rollbackDetail: error.localizedDescription
-                )
-            }
-            await apiClient.setAuthSession(nil)
-            pendingRegistration = nil
-            do {
-                try pendingRegistrationStore.remove()
-                try sessionStore.remove()
-            } catch {
-                // A failed verified save may still have left a partial
-                // Keychain item behind. Persist the cleanup gate so a relaunch
-                // cannot treat stale authority as usable or create replacement
-                // device keys before removal succeeds.
-                bootstrapMarkers.beginCleanup()
-                bootstrapMarkers.markCleanupFailed()
-                requiresFreshInstallKeychainReset = true
-                needsLocalCleanupRetry = true
-                throw RegistrationRecoveryError.rollbackCleanupFailed(
-                    persistenceDetail: persistenceError.localizedDescription,
-                    cleanupDetail: error.localizedDescription
-                )
-            }
-            bootstrapMarkers.resolveRegistrationUncertainty()
-            throw persistenceError
-        }
-        guard accountStateGeneration == registrationGeneration,
-              !isClearingLocalAccountState,
-              relayBaseURLString == registrationRelay else {
-            // The durable pending record intentionally remains for the current
-            // generation to recover on the next explicit retry.
+            // Leave the verified intent protected for explicit reconciliation.
             throw AuthSessionValidationError.noRecoverableSession
         }
         pendingRegistration = pendingRecord
+        bootstrapMarkers.markRegistrationUncertain()
         do {
             try await completePendingRegistration(pendingRecord)
             needsAuthenticationRecoveryRetry = false
@@ -646,12 +692,22 @@ final class AppState: ObservableObject {
     }
 
     func refresh() async {
+#if DEBUG
+        guard !isScreenshotPreview else {
+            return
+        }
+#endif
         await perform {
             try await refreshLocalState()
         }
     }
 
     func refreshQuietly() async {
+#if DEBUG
+        guard !isScreenshotPreview else {
+            return
+        }
+#endif
         guard currentUser != nil, !isWorking, !isRefreshingQuietly else {
             return
         }
@@ -667,6 +723,12 @@ final class AppState: ObservableObject {
     }
 
     func startRemotePolling(every intervalNanoseconds: UInt64 = 2_000_000_000) {
+#if DEBUG
+        guard !isScreenshotPreview else {
+            stopRemotePolling()
+            return
+        }
+#endif
         guard currentUser != nil else {
             stopRemotePolling()
             return
@@ -704,6 +766,10 @@ final class AppState: ObservableObject {
         confirmation: LocalRegistrationResetConfirmation
     ) async {
         guard confirmation == .eraseProtectedLocalAccount else {
+            return
+        }
+        guard !isPendingRegistrationResetBlocked else {
+            lastErrorMessage = "Retry protected account recovery before resetting this device. The relay may already have accepted this registration, so Kithra must keep its signing key."
             return
         }
         await perform {
@@ -2556,9 +2622,8 @@ final class AppState: ObservableObject {
             throw AuthSessionValidationError.noRecoverableSession
         }
 
-        // An in-memory record can exist only when initial Keychain protection
-        // and server rollback both failed. Verify durable recovery before doing
-        // anything else on retry.
+        // Always verify the exact intent again before any first or repeated
+        // network request. This also protects records restored after relaunch.
         try PendingRegistrationPersistence.saveAndVerify(
             record,
             in: pendingRegistrationStore
@@ -2579,11 +2644,68 @@ final class AppState: ObservableObject {
             throw AuthSessionValidationError.noRecoverableSession
         }
 
+        var activeRecord = record
+        if activeRecord.session == nil {
+            bootstrapMarkers.markRegistrationUncertain()
+            let session: AuthSession
+            do {
+                session = try await apiClient.register(
+                    username: activeRecord.username,
+                    deviceID: activeRecord.deviceID,
+                    deviceName: activeRecord.deviceName,
+                    encryptionPublicKey: identity.encryptionPublicKey,
+                    signingPublicKey: identity.signingPublicKey
+                )
+            } catch let apiError as APIClientError
+                where apiError.registrationWasDefinitelyNotAccepted {
+                try abandonPendingRegistration(activeRecord)
+                throw apiError
+            } catch let conflictError as APIClientError
+                where conflictError.registrationRequiresSignedRecovery {
+                session = try await recoverRegistrationSessionAfterConflict(
+                    conflictError,
+                    record: activeRecord
+                )
+            } catch {
+                throw error
+            }
+            guard accountStateGeneration == registrationGeneration,
+                  pendingRegistration == activeRecord,
+                  !isClearingLocalAccountState,
+                  relayBaseURLString == activeRecord.relayBaseURLString,
+                  let currentIdentity = try await keyManager.currentIdentity(),
+                  currentIdentity == identity else {
+                throw AuthSessionValidationError.noRecoverableSession
+            }
+            try AuthSessionValidator.validateRegistration(
+                session,
+                requestedUsername: activeRecord.username,
+                localIdentity: currentIdentity
+            )
+            guard session.device.id == activeRecord.deviceID,
+                  session.device.name == activeRecord.deviceName else {
+                throw AuthSessionValidationError.identityMismatch
+            }
+
+            let completedRecord = activeRecord.completing(with: session)
+            try PendingRegistrationPersistence.saveAndVerify(
+                completedRecord,
+                in: pendingRegistrationStore
+            )
+            guard accountStateGeneration == registrationGeneration,
+                  pendingRegistration == activeRecord,
+                  !isClearingLocalAccountState else {
+                throw AuthSessionValidationError.noRecoverableSession
+            }
+            pendingRegistration = completedRecord
+            activeRecord = completedRecord
+        }
+
         let protectedSession: StoredAuthSession
         if let storedAuthSession {
             guard PendingRegistrationRecovery.isCompatible(
                 storedAuthSession,
-                with: record
+                with: activeRecord
             ) else {
                 needsAuthenticationStorageReload = true
                 needsAuthenticationRecoveryRetry = false
@@ -2591,7 +2713,10 @@ final class AppState: ObservableObject {
             }
             protectedSession = storedAuthSession
         } else {
-            protectedSession = record.storedSession
+            guard let pendingSession = activeRecord.storedSession else {
+                throw AuthSessionValidationError.noRecoverableSession
+            }
+            protectedSession = pendingSession
             try ProtectedAuthSessionPersistence.saveAndVerify(
                 protectedSession,
                 in: sessionStore
@@ -2601,15 +2726,15 @@ final class AppState: ObservableObject {
 
         try await completeProtectedRegistration(
             protectedSession,
-            requestedUsername: record.username,
+            requestedUsername: activeRecord.username,
             allowsExpiredRecoveryAuthority: true,
             resolvesRegistrationUncertainty: false
         )
         guard accountStateGeneration == registrationGeneration,
-              pendingRegistration == record,
+              pendingRegistration == activeRecord,
               !isClearingLocalAccountState,
               let activeStoredSession = storedAuthSession,
-              PendingRegistrationRecovery.isCompatible(activeStoredSession, with: record) else {
+              PendingRegistrationRecovery.isCompatible(activeStoredSession, with: activeRecord) else {
             throw AuthSessionValidationError.noRecoverableSession
         }
         try PendingRegistrationPersistence.removeAndVerify(from: pendingRegistrationStore)
@@ -2618,19 +2743,74 @@ final class AppState: ObservableObject {
         needsAuthenticationStorageReload = false
     }
 
+    private func recoverRegistrationSessionAfterConflict(
+        _ conflictError: APIClientError,
+        record: PendingRegistrationRecord
+    ) async throws -> AuthSession {
+        let challenge: LoginChallenge
+        do {
+            challenge = try await apiClient.requestLoginChallenge(
+                username: record.username,
+                deviceID: record.deviceID
+            )
+        } catch let challengeError as APIClientError
+            where challengeError.isUnauthorizedResponse {
+            // The single authoritative SQLite relay has neither this
+            // username/device pair nor an account committed from our exact
+            // request. The 409 was therefore a true username or device
+            // conflict, so discarding the unused intent is safe and lets the
+            // user choose another username. Network/5xx challenge failures and
+            // every login failure remain fail-closed with the intent intact.
+            try abandonPendingRegistration(record)
+            throw conflictError
+        }
+        try AuthSessionValidator.validateChallenge(challenge)
+        let challengeResponse = try await keyManager.makeLoginChallengeResponse(
+            challenge: challenge.challenge
+        )
+        return try await apiClient.login(
+            username: record.username,
+            deviceID: record.deviceID,
+            challengeID: challenge.challengeID,
+            challengeResponse: challengeResponse
+        )
+    }
+
+    private func abandonPendingRegistration(
+        _ record: PendingRegistrationRecord
+    ) throws {
+        guard pendingRegistration == record,
+              !isClearingLocalAccountState else {
+            throw AuthSessionValidationError.noRecoverableSession
+        }
+        try PendingRegistrationPersistence.removeAndVerify(
+            from: pendingRegistrationStore
+        )
+        pendingRegistration = nil
+        bootstrapMarkers.resolveRegistrationUncertainty()
+    }
+
     private func validatePendingRegistrationIdentity(
         _ record: PendingRegistrationRecord,
         against identity: DevicePublicIdentity
     ) throws {
-        guard identity.deviceID == nil || identity.deviceID == record.session.device.id,
+        guard identity.deviceID == nil || identity.deviceID == record.deviceID,
               record.expectedIdentity.deviceID == nil
-                || record.expectedIdentity.deviceID == record.session.device.id,
-              AuthSessionValidator.identitiesMatch(identity, session: record.session),
-              AuthSessionValidator.identitiesMatch(
-                record.expectedIdentity.publicIdentityForValidation,
-                session: record.session
-              ) else {
+                || record.expectedIdentity.deviceID == record.deviceID,
+              identity.encryptionPublicKey == record.expectedIdentity.encryptionPublicKey,
+              identity.signingPublicKey == record.expectedIdentity.signingPublicKey else {
             throw AuthSessionValidationError.identityMismatch
+        }
+        if let session = record.session {
+            guard session.device.id == record.deviceID,
+                  session.device.name == record.deviceName,
+                  AuthSessionValidator.identitiesMatch(identity, session: session),
+                  AuthSessionValidator.identitiesMatch(
+                    record.expectedIdentity.publicIdentityForValidation,
+                    session: session
+                  ) else {
+                throw AuthSessionValidationError.identityMismatch
+            }
         }
     }
 
@@ -2874,8 +3054,6 @@ private struct AuthenticationBootstrapBlockedError: Error, LocalizedError {
 private enum RegistrationRecoveryError: Error, LocalizedError {
     case usernameMismatch(expected: String)
     case bindingFailed(detail: String)
-    case rollbackFailed(persistenceDetail: String, rollbackDetail: String)
-    case rollbackCleanupFailed(persistenceDetail: String, cleanupDetail: String)
 
     var errorDescription: String? {
         switch self {
@@ -2883,10 +3061,6 @@ private enum RegistrationRecoveryError: Error, LocalizedError {
             return "Finish recovering the protected registration for \(expected) before using another username."
         case .bindingFailed(let detail):
             return "The relay registration is protected in Keychain, but Kithra could not finish binding this device (\(detail)). Retry Register with the same username or relaunch Kithra."
-        case .rollbackFailed(let persistenceDetail, let rollbackDetail):
-            return "Kithra could not protect the new relay session (\(persistenceDetail)) or roll the registration back (\(rollbackDetail)). Keep Kithra open and retry Register with the same username; no second relay account will be created."
-        case .rollbackCleanupFailed(let persistenceDetail, let cleanupDetail):
-            return "Kithra rolled back the relay registration after Keychain protection failed (\(persistenceDetail)), but local authority cleanup is incomplete (\(cleanupDetail)). Retry local cleanup before registering again."
         }
     }
 }

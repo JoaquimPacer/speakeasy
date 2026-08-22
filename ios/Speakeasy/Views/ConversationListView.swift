@@ -271,10 +271,14 @@ private struct ConversationRow: View {
                     if let latest = conversation.latestMessage {
                         Label(latest.status.displayTitle, systemImage: latest.status.systemImage)
                             .font(.caption)
+                            .lineLimit(1)
+                            .fixedSize(horizontal: true, vertical: false)
                             .foregroundStyle(latest.status.tint)
 
                         Text(ByteCountFormatter.string(fromByteCount: Int64(latest.blobSize), countStyle: .file))
                             .font(.caption)
+                            .lineLimit(1)
+                            .fixedSize(horizontal: true, vertical: false)
                             .foregroundStyle(.secondary)
                     } else {
                         Label("Ready", systemImage: "video")

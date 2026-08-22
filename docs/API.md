@@ -9,7 +9,8 @@ attachments.
 
 - JSON request and response bodies unless an endpoint explicitly transfers a
   binary encrypted blob.
-- IDs are server-generated strings.
+- IDs are UUID strings. The client generates and durably stores its `deviceID`
+  before registration; the relay generates all other IDs.
 - Timestamps are RFC 3339 strings.
 - Binary keys and envelope fields are standard base64 strings in JSON. This
   matches Swift `Data` and Go `[]byte` JSON defaults.
@@ -32,6 +33,7 @@ Request:
 
 ```json
 {
+  "deviceID": "uuid",
   "username": "alex",
   "deviceName": "Alex iPhone",
   "encryptionPublicKey": "base64-x25519-public-key",
@@ -63,6 +65,14 @@ Response:
 
 The default session lifetime is 30 days and is deployment-configurable. The
 response is sent with `Cache-Control: no-store`.
+
+A new identity returns HTTP 201. If either the username or client-generated
+`deviceID` already exists, the relay returns the same generic HTTP 409 response
+and never issues a bearer token from registration fields alone. A client that
+may have lost a committed registration response recovers by completing
+`/auth/challenge` and `/auth/login` with the signing private key it stored before
+the original request. The client must verify that the recovered user, device,
+name, and both public keys exactly match its durable registration intent.
 
 ### `POST /auth/challenge`
 

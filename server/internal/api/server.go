@@ -32,6 +32,7 @@ type Server struct {
 
 	blobMutationMu sync.Mutex
 	abuseWriteMu   sync.Mutex
+	registrationMu sync.Mutex
 
 	registrationIPLimiter     *fixedWindowLimiter
 	registrationGlobalLimiter *fixedWindowLimiter
@@ -123,6 +124,7 @@ type authSessionResponse struct {
 }
 
 type registerRequest struct {
+	DeviceID            string `json:"deviceID"`
 	Username            string `json:"username"`
 	DeviceName          string `json:"deviceName"`
 	EncryptionPublicKey []byte `json:"encryptionPublicKey"`
@@ -150,6 +152,7 @@ const (
 	sealedContentKeyAlgorithm      = "crypto_box_seal"
 	ed25519AuthenticationAlgorithm = "Ed25519"
 	authenticatedCreatedAtLayout   = "2006-01-02T15:04:05Z"
+	registrationConflictMessage    = "registration identity already exists"
 )
 
 func (r *registerRequest) UnmarshalJSON(data []byte) error {
@@ -354,8 +357,13 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	req.DeviceID = normalizeID(req.DeviceID)
 	req.Username = strings.TrimSpace(req.Username)
 	req.DeviceName = strings.TrimSpace(req.DeviceName)
+	if !isNonzeroUUID(req.DeviceID) {
+		http.Error(w, "deviceID must be a nonzero UUID", http.StatusBadRequest)
+		return
+	}
 	if err := validateUsername(req.Username); err != nil {
 		http.Error(w, "invalid username: "+err.Error(), http.StatusBadRequest)
 		return
@@ -372,8 +380,15 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	now := nowTime.Format(time.RFC3339)
 	expiresAt := nowTime.Add(s.options.SessionTTL).Format(time.RFC3339)
 	userID := mustID()
-	deviceID := mustID()
+	deviceID := req.DeviceID
 	token := mustToken()
+
+	// Serialize the user/device/session transaction so simultaneous first-run
+	// requests resolve deterministically as one creation and one ambiguous
+	// conflict. A conflict never grants authority; the client must recover with
+	// the signed challenge/login flow.
+	s.registrationMu.Lock()
+	defer s.registrationMu.Unlock()
 
 	tx, err := s.db.BeginTx(r.Context(), nil)
 	if err != nil {
@@ -381,6 +396,24 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer tx.Rollback()
+
+	var registrationExists int
+	err = tx.QueryRowContext(
+		r.Context(),
+		`SELECT 1
+		 WHERE EXISTS (SELECT 1 FROM users WHERE username = ?)
+		    OR EXISTS (SELECT 1 FROM devices WHERE id = ?)`,
+		req.Username,
+		deviceID,
+	).Scan(&registrationExists)
+	if err == nil {
+		http.Error(w, registrationConflictMessage, http.StatusConflict)
+		return
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 
 	if _, err := tx.ExecContext(
 		r.Context(),
@@ -390,7 +423,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		now,
 		now,
 	); err != nil {
-		http.Error(w, "username is already taken or invalid", http.StatusConflict)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
@@ -406,7 +439,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		now,
 		now,
 	); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 

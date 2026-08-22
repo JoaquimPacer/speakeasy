@@ -59,6 +59,30 @@ enum APIClientError: Error, LocalizedError {
             return false
         }
     }
+
+    /// Malformed registration input is rejected before a request can commit.
+    /// Conflicts require signed recovery because the same device may already
+    /// exist after a lost response.
+    var registrationWasDefinitelyNotAccepted: Bool {
+        guard case .serverStatus(let statusCode, _) = self else {
+            return false
+        }
+        return statusCode == 400
+    }
+
+    var registrationRequiresSignedRecovery: Bool {
+        guard case .serverStatus(let statusCode, _) = self else {
+            return false
+        }
+        return statusCode == 409
+    }
+
+    var isUnauthorizedResponse: Bool {
+        guard case .serverStatus(let statusCode, _) = self else {
+            return false
+        }
+        return statusCode == 401
+    }
 }
 
 enum HTTPMethod: String {
@@ -115,9 +139,16 @@ actor SpeakeasyAPIClient {
         authenticationRecoveryHandler = handler
     }
 
-    func register(username: String, deviceName: String?, encryptionPublicKey: Data, signingPublicKey: Data) async throws -> AuthSession {
+    func register(
+        username: String,
+        deviceID: UUID,
+        deviceName: String?,
+        encryptionPublicKey: Data,
+        signingPublicKey: Data
+    ) async throws -> AuthSession {
         let payload = RegisterRequest(
             username: username,
+            deviceID: deviceID,
             deviceName: deviceName,
             encryptionPublicKey: encryptionPublicKey,
             signingPublicKey: signingPublicKey
@@ -562,6 +593,7 @@ private struct LossyDecodable<Value: Decodable>: Decodable {
 
 private struct RegisterRequest: Encodable {
     var username: String
+    var deviceID: UUID
     var deviceName: String?
     var encryptionPublicKey: Data
     var signingPublicKey: Data
