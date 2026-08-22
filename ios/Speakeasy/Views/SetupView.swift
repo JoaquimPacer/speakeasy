@@ -26,7 +26,31 @@ struct SetupView: View {
             }
 
             Section("Device") {
-                if appState.needsLocalCleanupRetry {
+                if appState.isAccountDeletionIntentStorageUncertain {
+                    Text("Kithra could not read the protected account-deletion record. Unlock this device, then reload it before any local keys can be erased or restored.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                    Button("Reload protected deletion state") {
+                        Task {
+                            if appState.needsLocalCleanupRetry {
+                                await appState.retryAccountDeletionIntentStorageLoad()
+                            } else {
+                                await appState.retryAuthenticationStorageLoad()
+                            }
+                        }
+                    }
+                    .disabled(appState.isWorking || appState.isRestoringSession)
+                } else if appState.needsAccountDeletionRetry {
+                    Text("Account deletion is pending. Kithra kept this device's protected signing key and encrypted local media so it can safely reconcile an interrupted relay response.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                    Button("Retry account deletion", role: .destructive) {
+                        Task {
+                            await appState.retryPendingAccountDeletion()
+                        }
+                    }
+                    .disabled(appState.isWorking || appState.isRestoringSession)
+                } else if appState.needsLocalCleanupRetry {
                     Text("A previously confirmed local reset did not finish. Retry that cleanup before creating or registering a device identity.")
                         .font(.footnote)
                         .foregroundStyle(.secondary)

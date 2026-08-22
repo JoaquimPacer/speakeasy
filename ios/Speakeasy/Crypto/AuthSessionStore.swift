@@ -43,6 +43,43 @@ struct StoredAuthSession: Codable, Hashable {
     var session: AuthSession
 }
 
+enum AccountDeletionPhase: String, Codable, Hashable {
+    case awaitingRelayDeletion
+    case relayDeletionConfirmed
+}
+
+/// Device-bound, crash-durable authority for a confirmed account deletion.
+/// The record is written and read back before DELETE can reach the relay. It
+/// intentionally carries no bearer or private key; those stay in their
+/// existing Keychain namespaces until the relay outcome is definitive.
+struct PendingAccountDeletionRecord: Codable, Hashable {
+    var relayBaseURLString: String
+    var userID: UUID
+    var username: String
+    var deviceID: UUID
+    var expectedIdentity: PendingRegistrationIdentity
+    var phase: AccountDeletionPhase
+
+    init(
+        protectedSession: StoredAuthSession,
+        identity: DevicePublicIdentity,
+        phase: AccountDeletionPhase = .awaitingRelayDeletion
+    ) {
+        relayBaseURLString = protectedSession.relayBaseURLString
+        userID = protectedSession.session.user.id
+        username = protectedSession.session.user.username
+        deviceID = protectedSession.session.device.id
+        expectedIdentity = PendingRegistrationIdentity(identity)
+        self.phase = phase
+    }
+
+    func confirmingRelayDeletion() -> PendingAccountDeletionRecord {
+        var confirmed = self
+        confirmed.phase = .relayDeletionConfirmed
+        return confirmed
+    }
+}
+
 /// Crash-durable authority for a registration attempt. The client-generated
 /// device ID and exact local public identity are protected before the first
 /// relay request, so a lost response can replay the same registration identity
@@ -177,9 +214,11 @@ struct PendingRegistrationIdentity: Codable, Hashable {
 enum AuthSessionStoreError: Error, LocalizedError {
     case corruptStoredSession
     case corruptPendingRegistration
+    case corruptAccountDeletionIntent
     case migrationVerificationFailed
     case persistenceVerificationFailed
     case pendingRegistrationVerificationFailed
+    case accountDeletionPersistenceVerificationFailed
     case conflictingRegistrationRecovery
     case ambiguousRegistrationRecovery
     case keychain(OSStatus)
@@ -190,12 +229,16 @@ enum AuthSessionStoreError: Error, LocalizedError {
             return "The protected relay session could not be decoded. Reload protected storage; Kithra will not erase or replace the existing identity automatically."
         case .corruptPendingRegistration:
             return "The protected pending registration could not be decoded. Reload protected storage; the existing device identity was not replaced."
+        case .corruptAccountDeletionIntent:
+            return "The protected account-deletion intent could not be decoded. Kithra will not restore the account or erase its keys until protected storage is reconciled."
         case .migrationVerificationFailed:
             return "The legacy relay session was not removed because its protected Keychain copy could not be verified. Reload protected storage before continuing."
         case .persistenceVerificationFailed:
             return "The protected relay session did not match after it was saved to Keychain. The account was not activated locally."
         case .pendingRegistrationVerificationFailed:
             return "The pending relay registration did not match after it was saved to Keychain. Kithra will not rely on it after restart."
+        case .accountDeletionPersistenceVerificationFailed:
+            return "Protected account-deletion state did not match after a Keychain transition. Kithra will not assume whether relay deletion or local cleanup is complete."
         case .conflictingRegistrationRecovery:
             return "Protected registration records disagree. Kithra refused to choose between them or replace the existing identity."
         case .ambiguousRegistrationRecovery:
@@ -231,6 +274,12 @@ protocol PendingRegistrationStoring: AnyObject {
     func remove() throws
 }
 
+protocol AccountDeletionIntentStoring: AnyObject {
+    func load() throws -> PendingAccountDeletionRecord?
+    func save(_ record: PendingAccountDeletionRecord) throws
+    func remove() throws
+}
+
 enum PendingRegistrationPersistence {
     static func saveAndVerify(
         _ record: PendingRegistrationRecord,
@@ -246,6 +295,25 @@ enum PendingRegistrationPersistence {
         try store.remove()
         guard try store.load() == nil else {
             throw AuthSessionStoreError.pendingRegistrationVerificationFailed
+        }
+    }
+}
+
+enum AccountDeletionIntentPersistence {
+    static func saveAndVerify(
+        _ record: PendingAccountDeletionRecord,
+        in store: AccountDeletionIntentStoring
+    ) throws {
+        try store.save(record)
+        guard try store.load() == record else {
+            throw AuthSessionStoreError.accountDeletionPersistenceVerificationFailed
+        }
+    }
+
+    static func removeAndVerify(from store: AccountDeletionIntentStoring) throws {
+        try store.remove()
+        guard try store.load() == nil else {
+            throw AuthSessionStoreError.accountDeletionPersistenceVerificationFailed
         }
     }
 }
@@ -281,13 +349,17 @@ struct LocalAccountBootstrapPlan: Equatable {
         case legacyUpgrade
         case freshInstall
         case cleanupRecovery
+        case accountDeletionRecovery
         case registrationRecovery
     }
 
     let mode: Mode
 
     var permitsProtectedSessionRestore: Bool {
-        mode == .existingInstall || mode == .legacyUpgrade || mode == .registrationRecovery
+        mode == .existingInstall
+            || mode == .legacyUpgrade
+            || mode == .accountDeletionRecovery
+            || mode == .registrationRecovery
     }
 
     var shouldAttemptLegacyMigration: Bool {
@@ -306,15 +378,23 @@ struct LocalAccountBootstrapPlan: Equatable {
         mode == .registrationRecovery
     }
 
+    var requiresAccountDeletionReconciliation: Bool {
+        mode == .accountDeletionRecovery
+    }
+
     static func make(
         hasInstallMarker: Bool,
         cleanupInProgress: Bool,
         cleanupFailed: Bool,
+        hasProtectedAccountDeletionIntent: Bool,
         registrationUncertain: Bool,
         hasLegacySession: Bool
     ) -> LocalAccountBootstrapPlan {
         if cleanupInProgress || cleanupFailed {
             return LocalAccountBootstrapPlan(mode: .cleanupRecovery)
+        }
+        if hasProtectedAccountDeletionIntent {
+            return LocalAccountBootstrapPlan(mode: .accountDeletionRecovery)
         }
         if registrationUncertain {
             return LocalAccountBootstrapPlan(mode: .registrationRecovery)
@@ -369,10 +449,17 @@ final class LocalAccountBootstrapMarkers {
     }
 
     var plan: LocalAccountBootstrapPlan {
+        plan(hasProtectedAccountDeletionIntent: false)
+    }
+
+    func plan(
+        hasProtectedAccountDeletionIntent: Bool
+    ) -> LocalAccountBootstrapPlan {
         LocalAccountBootstrapPlan.make(
             hasInstallMarker: preferences.object(forKey: Self.installMarkerKey) != nil,
             cleanupInProgress: preferences.bool(forKey: Self.cleanupInProgressKey),
             cleanupFailed: preferences.bool(forKey: Self.cleanupFailedKey),
+            hasProtectedAccountDeletionIntent: hasProtectedAccountDeletionIntent,
             registrationUncertain: hasRegistrationUncertainty,
             hasLegacySession: legacySessionData != nil
         )
@@ -469,6 +556,119 @@ enum LocalAccountSessionBootstrap {
         )
         didVerifyLegacyProtection(migratedSession)
         return migratedSession
+    }
+}
+
+/// Stores a confirmed deletion intent independently from bearer authority so
+/// it survives both process death and app reinstall. The exact public account
+/// binding prevents a surviving marker from deleting a replacement identity.
+final class KeychainAccountDeletionIntentStore: AccountDeletionIntentStoring {
+    private let service: String
+    private let account: String
+    private let accessGroup: String?
+    private let encoder: JSONEncoder
+    private let decoder: JSONDecoder
+
+    init(
+        service: String = "com.speakeasy.auth-session",
+        account: String = "account-deletion-intent",
+        accessGroup: String? = nil
+    ) {
+        self.service = service
+        self.account = account
+        self.accessGroup = accessGroup
+        self.encoder = ProtectedAuthRecordCoding.makeEncoder()
+        self.decoder = ProtectedAuthRecordCoding.makeDecoder()
+    }
+
+    func load() throws -> PendingAccountDeletionRecord? {
+        var query = baseQuery()
+        query[kSecReturnData as String] = true
+        query[kSecMatchLimit as String] = kSecMatchLimitOne
+
+        var item: CFTypeRef?
+        let status = SecItemCopyMatching(query as CFDictionary, &item)
+        if status == errSecItemNotFound {
+            return nil
+        }
+        guard status == errSecSuccess else {
+            throw AuthSessionStoreError.keychain(status)
+        }
+        guard let data = item as? Data else {
+            throw AuthSessionStoreError.corruptAccountDeletionIntent
+        }
+
+        do {
+            let record = try decoder.decode(PendingAccountDeletionRecord.self, from: data)
+            try Self.validate(record)
+            return record
+        } catch let error as AuthSessionStoreError {
+            throw error
+        } catch {
+            throw AuthSessionStoreError.corruptAccountDeletionIntent
+        }
+    }
+
+    func save(_ record: PendingAccountDeletionRecord) throws {
+        try Self.validate(record)
+        let data = try encoder.encode(record)
+        var query = baseQuery()
+        query[kSecValueData as String] = data
+        query[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlockedThisDeviceOnly
+
+        let status = SecItemAdd(query as CFDictionary, nil)
+        if status == errSecSuccess {
+            return
+        }
+        if status == errSecDuplicateItem {
+            let attributes: [String: Any] = [
+                kSecValueData as String: data,
+                kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlockedThisDeviceOnly
+            ]
+            let updateStatus = SecItemUpdate(
+                baseQuery() as CFDictionary,
+                attributes as CFDictionary
+            )
+            guard updateStatus == errSecSuccess else {
+                throw AuthSessionStoreError.keychain(updateStatus)
+            }
+            return
+        }
+        throw AuthSessionStoreError.keychain(status)
+    }
+
+    func remove() throws {
+        let status = SecItemDelete(baseQuery() as CFDictionary)
+        guard status == errSecSuccess || status == errSecItemNotFound else {
+            throw AuthSessionStoreError.keychain(status)
+        }
+    }
+
+    private static func validate(_ record: PendingAccountDeletionRecord) throws {
+        let zeroUUID = UUID(uuid: (0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0))
+        guard let relayURL = URL(string: record.relayBaseURLString),
+              relayURL.scheme != nil,
+              relayURL.host != nil,
+              record.userID != zeroUUID,
+              !record.username.isEmpty,
+              record.deviceID != zeroUUID,
+              record.expectedIdentity.deviceID == record.deviceID,
+              record.expectedIdentity.encryptionPublicKey.count == 32,
+              record.expectedIdentity.signingPublicKey.count == 32 else {
+            throw AuthSessionStoreError.corruptAccountDeletionIntent
+        }
+    }
+
+    private func baseQuery() -> [String: Any] {
+        var query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account
+        ]
+        if let accessGroup {
+            query[kSecAttrAccessGroup as String] = accessGroup
+        }
+        return query
     }
 }
 

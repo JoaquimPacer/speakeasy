@@ -100,6 +100,13 @@ Response:
 Challenges expire after five minutes by default, are single-use, and are sent
 with `Cache-Control: no-store`.
 
+If the exact normalized username/device pair does not exist, the relay returns
+HTTP 401 with `Content-Type: text/plain; charset=utf-8` and the exact body
+`invalid login identity\n`. The iOS account-deletion recovery path treats only
+that complete status/header/body tuple as evidence that an earlier successful
+delete removed the identity; every other 401 remains ambiguous and preserves
+the protected deletion intent for retry.
+
 ### `POST /auth/login`
 
 The device signs the exact byte transcript
@@ -128,6 +135,22 @@ Revokes every bearer session and outstanding login challenge for the
 authenticated device and returns HTTP 204. It does not delete the device
 identity or affect another device record. V1 permits one active device per
 user.
+
+### `DELETE /account`
+
+Requires a valid bearer session. Before removing database ownership records,
+the relay deletes every unique ciphertext path referenced by a message or
+`pending_blob_writes` row where the authenticated user is the sender or
+recipient. Blob deletion is idempotent, so a retry remains safe after an
+earlier attempt removed only some files.
+
+If any ciphertext deletion fails, the relay returns HTTP 500 and preserves the
+user, sessions, messages, and all related `pending_blob_writes` ownership rows
+so the same authenticated request can retry. Only after every storage deletion
+succeeds does one database transaction remove the related pending-write rows
+and the user, allowing foreign-key cascades to remove account-owned records.
+Success returns HTTP 204. A retry after a completed deletion is unauthenticated
+because the account and its sessions no longer exist.
 
 ## Contacts
 

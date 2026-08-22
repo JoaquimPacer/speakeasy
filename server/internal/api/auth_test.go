@@ -8,6 +8,7 @@ import (
 	"database/sql"
 	"encoding/base64"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -22,6 +23,66 @@ import (
 type authTestIdentity struct {
 	session    authSessionResponse
 	privateKey ed25519.PrivateKey
+}
+
+func TestChallengeIdentityMissHasStableExactResponse(t *testing.T) {
+	_, relay, _ := newAuthTestRelay(t, Options{RetentionDays: 7})
+	identity := registerAuthTestIdentity(t, relay.URL, "identity-miss-alice")
+
+	// Normalization must still resolve the exact username/device pair.
+	requestAuthChallenge(
+		t,
+		relay.URL,
+		"  "+identity.session.User.Username+"  ",
+		strings.ToUpper(identity.session.Device.ID),
+		http.StatusCreated,
+	)
+
+	tests := []struct {
+		name     string
+		username string
+		deviceID string
+	}{
+		{
+			name:     "unknown username",
+			username: "identity-miss-unknown",
+			deviceID: identity.session.Device.ID,
+		},
+		{
+			name:     "unknown device",
+			username: identity.session.User.Username,
+			deviceID: mustID(),
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			status, contentType, body := rawAuthChallengeResponse(
+				t,
+				relay.URL,
+				test.username,
+				test.deviceID,
+			)
+			if status != http.StatusUnauthorized {
+				t.Fatalf("identity miss status = %d, want %d; body = %q", status, http.StatusUnauthorized, body)
+			}
+			if contentType != "text/plain; charset=utf-8" {
+				t.Fatalf("identity miss Content-Type = %q, want text/plain; charset=utf-8", contentType)
+			}
+			if string(body) != loginIdentityNotFoundMessage+"\n" {
+				t.Fatalf("identity miss body = %q, want exact stable discriminator", body)
+			}
+		})
+	}
+
+	status, _, body := rawAuthChallengeResponse(
+		t,
+		relay.URL,
+		"",
+		identity.session.Device.ID,
+	)
+	if status != http.StatusBadRequest || string(body) == loginIdentityNotFoundMessage+"\n" {
+		t.Fatalf("malformed challenge status = %d body = %q, want non-discriminator 400", status, body)
+	}
 }
 
 func TestChallengeLoginIsExpiringAndSingleUse(t *testing.T) {
@@ -440,6 +501,40 @@ func requestAuthChallenge(t *testing.T, baseURL string, username string, deviceI
 		DeviceID: deviceID,
 	}, wantStatus, target)
 	return challenge
+}
+
+func rawAuthChallengeResponse(
+	t *testing.T,
+	baseURL string,
+	username string,
+	deviceID string,
+) (int, string, []byte) {
+	t.Helper()
+	payload, err := json.Marshal(authChallengeRequest{
+		Username: username,
+		DeviceID: deviceID,
+	})
+	if err != nil {
+		t.Fatalf("marshal auth challenge: %v", err)
+	}
+	request := authedRequest(
+		t,
+		http.MethodPost,
+		baseURL+"/auth/challenge",
+		"",
+		bytes.NewReader(payload),
+	)
+	request.Header.Set("Content-Type", "application/json")
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatalf("POST auth challenge: %v", err)
+	}
+	defer response.Body.Close()
+	body, err := io.ReadAll(response.Body)
+	if err != nil {
+		t.Fatalf("read auth challenge response: %v", err)
+	}
+	return response.StatusCode, response.Header.Get("Content-Type"), body
 }
 
 func loginWithChallenge(t *testing.T, baseURL string, username string, deviceID string, challengeID string, signature []byte, wantStatus int) authSessionResponse {

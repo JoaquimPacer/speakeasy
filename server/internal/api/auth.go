@@ -17,8 +17,9 @@ import (
 )
 
 const (
-	loginChallengeSize = 32
-	loginDomain        = "KITHRA-LOGIN-CHALLENGE-v1\x00"
+	loginChallengeSize           = 32
+	loginDomain                  = "KITHRA-LOGIN-CHALLENGE-v1\x00"
+	loginIdentityNotFoundMessage = "invalid login identity"
 )
 
 func bearerTokenHash(token string) string {
@@ -80,7 +81,7 @@ func (s *Server) handleAuthChallenge(w http.ResponseWriter, r *http.Request) {
 		req.Username,
 	).Scan(&exists)
 	if errors.Is(err, sql.ErrNoRows) {
-		http.Error(w, "invalid login identity", http.StatusUnauthorized)
+		http.Error(w, loginIdentityNotFoundMessage, http.StatusUnauthorized)
 		return
 	}
 	if err != nil {

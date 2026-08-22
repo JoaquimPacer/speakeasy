@@ -12,6 +12,8 @@ enum APIClientError: Error, LocalizedError {
     case serverStatus(Int, Data)
     case missingAuthToken
     case authenticationRecoveryUnavailable
+    case loginIdentityNotFound
+    case unexpectedAccountDeletionResponse(Int)
     case uploadNotAttempted(String)
     case definitiveUploadRejection(Int, Data)
 
@@ -32,6 +34,10 @@ enum APIClientError: Error, LocalizedError {
             return "This endpoint requires an authenticated session."
         case .authenticationRecoveryUnavailable:
             return "The relay session expired and could not be renewed safely."
+        case .loginIdentityNotFound:
+            return "The protected relay login identity no longer exists."
+        case .unexpectedAccountDeletionResponse(let statusCode):
+            return "The relay returned unexpected HTTP \(statusCode) for account deletion. Kithra kept the protected deletion intent for a safe retry."
         case .uploadNotAttempted(let detail):
             return "The encrypted video was not uploaded: \(detail)"
         case .definitiveUploadRejection(let statusCode, let data):
@@ -78,10 +84,24 @@ enum APIClientError: Error, LocalizedError {
     }
 
     var isUnauthorizedResponse: Bool {
+        if case .loginIdentityNotFound = self {
+            return true
+        }
         guard case .serverStatus(let statusCode, _) = self else {
             return false
         }
         return statusCode == 401
+    }
+
+    /// The current relay emits this exact response only when the normalized
+    /// username/device lookup for a login challenge has no row. Generic 401s,
+    /// proxy pages, malformed bodies, and signature failures are not absence
+    /// proof and must retain account-deletion recovery authority.
+    var isLoginIdentityNotFoundResponse: Bool {
+        if case .loginIdentityNotFound = self {
+            return true
+        }
+        return false
     }
 }
 
@@ -90,6 +110,11 @@ enum HTTPMethod: String {
     case post = "POST"
     case patch = "PATCH"
     case delete = "DELETE"
+}
+
+enum AccountDeletionAttemptResult: Equatable {
+    case deleted
+    case unauthorized
 }
 
 actor SpeakeasyAPIClient {
@@ -158,7 +183,28 @@ actor SpeakeasyAPIClient {
 
     func requestLoginChallenge(username: String, deviceID: UUID) async throws -> LoginChallenge {
         let payload = LoginChallengeRequest(username: username, deviceID: deviceID)
-        return try await send(path: "/auth/challenge", method: .post, body: payload, requiresAuth: false)
+        let encodedBody = try encoder.encode(payload)
+        let (data, response) = try await data(
+            for: {
+                var request = try self.makeRequest(
+                    path: "/auth/challenge",
+                    method: .post,
+                    requiresAuth: false
+                )
+                request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+                request.httpBody = encodedBody
+                return request
+            },
+            requiresAuth: false
+        )
+        if let httpResponse = response as? HTTPURLResponse,
+           httpResponse.statusCode == 401,
+           httpResponse.value(forHTTPHeaderField: "Content-Type") == "text/plain; charset=utf-8",
+           data == Data("invalid login identity\n".utf8) {
+            throw APIClientError.loginIdentityNotFound
+        }
+        try validate(response: response, data: data)
+        return try decode(LoginChallenge.self, from: data)
     }
 
     func login(
@@ -319,12 +365,38 @@ actor SpeakeasyAPIClient {
         )
     }
 
-    func deleteAccount() async throws {
-        let _: EmptyResponse = try await send(
+    /// Attempts the destructive request exactly once with the installed bearer.
+    /// Account-deletion recovery must distinguish a stale bearer from an
+    /// already-removed identity, so it performs its signed identity probe in
+    /// AppState instead of using the generic automatic 401 retry path.
+    func attemptAccountDeletion() async throws -> AccountDeletionAttemptResult {
+        let request = try makeRequest(
             path: "/account",
             method: .delete,
             requiresAuth: true
         )
+        let attemptedToken = configuration.bearerToken
+        let (data, response) = try await session.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw APIClientError.invalidResponse
+        }
+        if httpResponse.statusCode == 401 {
+            clearRejectedTokenIfNeeded(
+                response: httpResponse,
+                attemptedToken: attemptedToken
+            )
+            return .unauthorized
+        }
+        guard httpResponse.statusCode == 204, data.isEmpty else {
+            if (200..<300).contains(httpResponse.statusCode) {
+                throw APIClientError.unexpectedAccountDeletionResponse(
+                    httpResponse.statusCode
+                )
+            }
+            try validate(response: httpResponse, data: data)
+            throw APIClientError.invalidResponse
+        }
+        return .deleted
     }
 
     private func send<Response: Decodable>(

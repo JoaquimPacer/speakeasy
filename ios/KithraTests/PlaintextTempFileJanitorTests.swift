@@ -348,8 +348,8 @@ final class PlaintextTempFileJanitorTests: XCTestCase {
         for url in abandoned + [playback, activeThumbnail] {
             try Data("plaintext".utf8).write(to: url)
         }
-        fixture.janitor.preserveWhileInUse(playback)
-        fixture.janitor.preserveWhileInUse(activeThumbnail)
+        try fixture.janitor.preserveWhileInUse(playback)
+        try fixture.janitor.preserveWhileInUse(activeThumbnail)
 
         let unrelatedFiles = [
             fixture.inlineRoot.appendingPathComponent("kithra-inline-not-a-uuid.mov"),

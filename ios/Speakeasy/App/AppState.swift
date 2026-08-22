@@ -22,6 +22,8 @@ final class AppState: ObservableObject {
     @Published var activePlaybackFile: PlaybackTempFile?
     @Published var isWorking = false
     @Published private(set) var needsLocalCleanupRetry = false
+    @Published private(set) var needsAccountDeletionRetry = false
+    @Published private(set) var isAccountDeletionIntentStorageUncertain = false
     @Published private(set) var needsAuthenticationStorageReload = false
     @Published private(set) var needsAuthenticationRecoveryRetry = false
     @Published private(set) var isRestoringSession = false
@@ -34,6 +36,7 @@ final class AppState: ObservableObject {
     let messageReplayStore: MessageReplayStoring
     private let sessionStore: AuthSessionStoring
     private let pendingRegistrationStore: PendingRegistrationStoring
+    private let accountDeletionIntentStore: AccountDeletionIntentStoring
     private let preferences: UserDefaults
     private let bootstrapMarkers: LocalAccountBootstrapMarkers
     private let messageAuthenticator: MessageEnvelopeAuthenticator
@@ -55,6 +58,7 @@ final class AppState: ObservableObject {
     private var accountStateGeneration: UInt64 = 0
     private var storedAuthSession: StoredAuthSession?
     private var pendingRegistration: PendingRegistrationRecord?
+    private var pendingAccountDeletion: PendingAccountDeletionRecord?
     private var sessionRenewalTask: Task<AuthSession, Error>?
     private var registrationTask: Task<Void, Never>?
     private var registrationAttemptID: UUID?
@@ -67,6 +71,8 @@ final class AppState: ObservableObject {
 
     var isAuthenticationBootstrapUncertain: Bool {
         needsLocalCleanupRetry
+            || needsAccountDeletionRetry
+            || isAccountDeletionIntentStorageUncertain
             || needsAuthenticationStorageReload
             || needsAuthenticationRecoveryRetry
             || isRestoringSession
@@ -96,6 +102,7 @@ final class AppState: ObservableObject {
         messageReplayStore: MessageReplayStoring = KeychainMessageReplayStore(),
         sessionStore: AuthSessionStoring = KeychainAuthSessionStore(),
         pendingRegistrationStore: PendingRegistrationStoring = KeychainPendingRegistrationStore(),
+        accountDeletionIntentStore: AccountDeletionIntentStoring = KeychainAccountDeletionIntentStore(),
         registrationDeviceIDProvider: @escaping () -> UUID = { UUID() },
         preferences: UserDefaults = .standard,
         messageAuthenticator: MessageEnvelopeAuthenticator = MessageEnvelopeAuthenticator(),
@@ -114,14 +121,26 @@ final class AppState: ObservableObject {
 #endif
         self.sessionStore = sessionStore
         self.pendingRegistrationStore = pendingRegistrationStore
+        self.accountDeletionIntentStore = accountDeletionIntentStore
         self.registrationDeviceIDProvider = registrationDeviceIDProvider
         self.preferences = preferences
 
         let bootstrapMarkers = LocalAccountBootstrapMarkers(preferences: preferences)
         self.bootstrapMarkers = bootstrapMarkers
+        var persistedAccountDeletion: PendingAccountDeletionRecord?
+        var accountDeletionBootstrapError: Error?
+        if !seedPreviewData {
+            do {
+                persistedAccountDeletion = try accountDeletionIntentStore.load()
+            } catch {
+                accountDeletionBootstrapError = error
+            }
+        }
         let bootstrapPlan = seedPreviewData
             ? LocalAccountBootstrapPlan(mode: .existingInstall)
-            : bootstrapMarkers.plan
+            : bootstrapMarkers.plan(
+                hasProtectedAccountDeletionIntent: persistedAccountDeletion != nil
+            )
         var persistedSession: StoredAuthSession?
         var persistedPendingRegistration: PendingRegistrationRecord?
         var sessionBootstrapError: Error?
@@ -165,9 +184,14 @@ final class AppState: ObservableObject {
             // Never choose one authority when the other protected namespace
             // could not be read or the two records conflict. A later reload
             // reconciles both stores together without erasing either record.
-            if sessionBootstrapError != nil || pendingRegistrationBootstrapError != nil {
+            if sessionBootstrapError != nil
+                || pendingRegistrationBootstrapError != nil
+                || accountDeletionBootstrapError != nil {
                 persistedSession = nil
                 persistedPendingRegistration = nil
+                if accountDeletionBootstrapError != nil {
+                    persistedAccountDeletion = nil
+                }
             }
         }
         let registrationUncertaintyWithoutAuthority = bootstrapPlan.requiresRegistrationReconciliation
@@ -175,7 +199,8 @@ final class AppState: ObservableObject {
             && persistedPendingRegistration == nil
             && sessionBootstrapError == nil
             && pendingRegistrationBootstrapError == nil
-        let initializationError = sessionBootstrapError
+        let initializationError = accountDeletionBootstrapError
+            ?? sessionBootstrapError
             ?? pendingRegistrationBootstrapError
             ?? (registrationUncertaintyWithoutAuthority
                 ? AuthSessionStoreError.ambiguousRegistrationRecovery
@@ -213,6 +238,7 @@ final class AppState: ObservableObject {
         self.messageAuthenticator = messageAuthenticator
         self.storedAuthSession = persistedSession
         self.pendingRegistration = persistedPendingRegistration
+        self.pendingAccountDeletion = persistedAccountDeletion
         self.requiresFreshInstallKeychainReset = !seedPreviewData
             && bootstrapPlan.requiresCleanupBeforeIdentityCreation
 
@@ -276,10 +302,19 @@ final class AppState: ObservableObject {
             self.activePlaybackFile = nil
         }
         self.needsLocalCleanupRetry = bootstrapPlan.requiresVisibleCleanupRetry
-        self.needsAuthenticationStorageReload = initializationError != nil
+        self.needsAccountDeletionRetry = persistedAccountDeletion != nil
+        self.isAccountDeletionIntentStorageUncertain = accountDeletionBootstrapError != nil
+        let authenticationStorageLoadFailedAtInitialization = initializationError != nil
+        self.needsAuthenticationStorageReload = authenticationStorageLoadFailedAtInitialization
         self.needsAuthenticationRecoveryRetry = false
         self.isRestoringSession = !self.needsAuthenticationStorageReload
-            && (persistedSession != nil || persistedPendingRegistration != nil)
+            && (persistedAccountDeletion != nil
+                || persistedSession != nil
+                || persistedPendingRegistration != nil)
+
+        if persistedAccountDeletion != nil || accountDeletionBootstrapError != nil {
+            mediaPipeline.closePlaintextProductionForAccountDeletion()
+        }
 
         if !seedPreviewData {
             Task { [weak self] in
@@ -292,8 +327,14 @@ final class AppState: ObservableObject {
                     }
                     return try await self.renewSession()
                 }
-                if self.needsAuthenticationStorageReload {
+                // Use the immutable bootstrap result. A user-triggered reload
+                // can clear the published flag before this startup task gets
+                // scheduled; consulting that mutable flag here would then
+                // start a second deletion reconciliation alongside the retry.
+                if authenticationStorageLoadFailedAtInitialization {
                     self.isRestoringSession = false
+                } else if persistedAccountDeletion != nil {
+                    await self.resumePendingAccountDeletion()
                 } else if let persistedPendingRegistration,
                    sessionBootstrapError == nil,
                    pendingRegistrationBootstrapError == nil {
@@ -584,10 +625,12 @@ final class AppState: ObservableObject {
         needsAuthenticationStorageReload = false
         var reloadedSession: StoredAuthSession?
         var reloadedPending: PendingRegistrationRecord?
+        var reloadedAccountDeletion: PendingAccountDeletionRecord?
         let loaded = await perform {
             let records = try loadProtectedAuthenticationRecords()
             reloadedSession = records.session
             reloadedPending = records.pending
+            reloadedAccountDeletion = records.accountDeletion
         }
         guard loaded else {
             needsAuthenticationStorageReload = true
@@ -597,12 +640,22 @@ final class AppState: ObservableObject {
 
         storedAuthSession = reloadedSession
         pendingRegistration = reloadedPending
+        pendingAccountDeletion = reloadedAccountDeletion
+        needsAccountDeletionRetry = reloadedAccountDeletion != nil
+        if reloadedAccountDeletion == nil {
+            mediaPipeline.reopenPlaintextProductionAfterAccountDeletionEnds()
+        } else {
+            mediaPipeline.closePlaintextProductionForAccountDeletion()
+        }
         if let protectedRelay = reloadedPending?.relayBaseURLString
             ?? reloadedSession?.relayBaseURLString {
             relayBaseURLString = protectedRelay
         }
 
-        if let reloadedPending {
+        if reloadedAccountDeletion != nil {
+            needsAccountDeletionRetry = true
+            await resumePendingAccountDeletion()
+        } else if let reloadedPending {
             await restorePendingRegistration(reloadedPending)
         } else if let reloadedSession {
             await restore(reloadedSession)
@@ -613,8 +666,43 @@ final class AppState: ObservableObject {
         }
     }
 
+    /// When a prior local cleanup marker is already authoritative, only reload
+    /// the deletion-intent namespace. This cannot restore a bearer or publish
+    /// signed-in UI, but it resolves a locked-Keychain deadlock after unlock.
+    func retryAccountDeletionIntentStorageLoad() async {
+        guard isAccountDeletionIntentStorageUncertain,
+              needsLocalCleanupRetry,
+              !isRestoringSession else {
+            return
+        }
+        isRestoringSession = true
+        var reloadedIntent: PendingAccountDeletionRecord?
+        let loaded = await perform {
+            reloadedIntent = try accountDeletionIntentStore.load()
+        }
+        guard loaded else {
+            isRestoringSession = false
+            return
+        }
+
+        isAccountDeletionIntentStorageUncertain = false
+        needsAuthenticationStorageReload = false
+        pendingAccountDeletion = reloadedIntent
+        needsAccountDeletionRetry = reloadedIntent != nil
+        if reloadedIntent != nil {
+            await resumePendingAccountDeletion()
+        } else {
+            isRestoringSession = false
+            lastErrorMessage = nil
+        }
+    }
+
     func retryAuthenticationRecovery() async {
         guard !isRestoringSession else {
+            return
+        }
+        if pendingAccountDeletion != nil {
+            await retryPendingAccountDeletion()
             return
         }
         if needsAuthenticationStorageReload {
@@ -760,15 +848,83 @@ final class AppState: ObservableObject {
 
     func deleteAccount() async {
         await perform {
-            try await apiClient.deleteAccount()
-            try await clearLocalAccountState()
+            guard currentUser != nil,
+                  let protectedSession = storedAuthSession else {
+                throw AccountDeletionRecoveryError.missingProtectedSession
+            }
+            let identity: DevicePublicIdentity
+            if let deviceIdentity {
+                identity = deviceIdentity
+            } else if let storedIdentity = try await keyManager.currentIdentity() {
+                identity = storedIdentity
+            } else {
+                throw AccountDeletionRecoveryError.missingDeviceIdentity
+            }
+            try AuthSessionValidator.validateStoredRecoveryAuthority(
+                protectedSession.session,
+                requestedUsername: protectedSession.session.user.username,
+                localIdentity: identity
+            )
+            let deletionIntent = PendingAccountDeletionRecord(
+                protectedSession: protectedSession,
+                identity: identity
+            )
+            // Close the shared producer gate before persistence. If Keychain
+            // commit/readback is ambiguous, the gate stays closed until an
+            // exact reload proves there is no durable deletion intent.
+            mediaPipeline.closePlaintextProductionForAccountDeletion()
+            // Keychain save plus exact readback must finish before DELETE can
+            // reach the relay. The record survives process death and reinstall.
+            do {
+                try AccountDeletionIntentPersistence.saveAndVerify(
+                    deletionIntent,
+                    in: accountDeletionIntentStore
+                )
+            } catch {
+                // A Keychain save can commit and still fail readback. Treat the
+                // namespace as unknown, hide active UI, and forbid local reset
+                // until a later exact reload proves whether the intent exists.
+                isAccountDeletionIntentStorageUncertain = true
+                needsAuthenticationStorageReload = true
+                needsAccountDeletionRetry = true
+                suspendPublishedAuthenticationForAccountDeletion()
+                await apiClient.setAuthSession(nil)
+                try? await removeInvalidatedPlaintextFiles()
+                throw error
+            }
+            pendingAccountDeletion = deletionIntent
+            needsAccountDeletionRetry = true
+            suspendPublishedAuthenticationForAccountDeletion()
+            try await reconcilePendingAccountDeletion()
         }
+    }
+
+    func retryPendingAccountDeletion() async {
+        guard pendingAccountDeletion != nil,
+              !isRestoringSession,
+              !isClearingLocalAccountState else {
+            return
+        }
+        if needsAuthenticationStorageReload {
+            await retryAuthenticationStorageLoad()
+            return
+        }
+        isRestoringSession = true
+        await resumePendingAccountDeletion()
     }
 
     func resetLocalRegistration(
         confirmation: LocalRegistrationResetConfirmation
     ) async {
         guard confirmation == .eraseProtectedLocalAccount else {
+            return
+        }
+        guard !isAccountDeletionIntentStorageUncertain else {
+            lastErrorMessage = "Reload the protected account-deletion record before resetting this device. Kithra will not erase the signing key while deletion state is unreadable."
+            return
+        }
+        guard pendingAccountDeletion == nil else {
+            lastErrorMessage = "Retry the confirmed account deletion before resetting this device. Kithra must keep its signing key until the relay deletion is definitive."
             return
         }
         guard !isPendingRegistrationResetBlocked else {
@@ -799,9 +955,29 @@ final class AppState: ObservableObject {
     }
 
     func resumePlaintextProductionAfterBecomingActive() {
+        guard pendingAccountDeletion == nil,
+              !isAccountDeletionIntentStorageUncertain,
+              !needsLocalCleanupRetry,
+              !isClearingLocalAccountState else {
+            return
+        }
+        mediaPipeline.reopenPlaintextProductionAfterAccountDeletionEnds()
         allowsPlaybackPreparation = true
         allowsPlaintextProduction = true
     }
+
+#if DEBUG
+    func installPlaybackPreparationPermitForTesting(
+        _ permit: PlaybackPreparationPermit
+    ) {
+        allowsPlaybackPreparation = true
+        playbackPreparationPermits[permit.id] = permit
+    }
+
+    var isPlaintextProductionEnabledForTesting: Bool {
+        allowsPlaybackPreparation || allowsPlaintextProduction
+    }
+#endif
 
     func invalidatePlaintextProductionForBackground() {
         allowsPlaybackPreparation = false
@@ -828,6 +1004,10 @@ final class AppState: ObservableObject {
     }
 
     func cleanupInvalidatedPlaintextFiles() async {
+        try? await removeInvalidatedPlaintextFiles()
+    }
+
+    private func removeInvalidatedPlaintextFiles() async throws {
         let cleanupURLs = invalidatedPlaintextURLsPendingCleanup
         invalidatedPlaintextURLsPendingCleanup.removeAll()
         do {
@@ -839,6 +1019,7 @@ final class AppState: ObservableObject {
             invalidatedPlaintextURLsPendingCleanup = uniqueURLs(
                 invalidatedPlaintextURLsPendingCleanup
             )
+            throw error
         }
     }
 
@@ -2300,6 +2481,155 @@ final class AppState: ObservableObject {
         }
     }
 
+    private func resumePendingAccountDeletion() async {
+        needsAccountDeletionRetry = true
+        suspendPublishedAuthenticationForAccountDeletion()
+        _ = await perform {
+            try await reconcilePendingAccountDeletion()
+        }
+        isRestoringSession = false
+    }
+
+    private func reconcilePendingAccountDeletion() async throws {
+        guard let deletionIntent = pendingAccountDeletion else {
+            needsAccountDeletionRetry = false
+            return
+        }
+        mediaPipeline.closePlaintextProductionForAccountDeletion()
+        try await removeInvalidatedPlaintextFiles()
+        try await mediaPipeline.removeAbandonedPlaintextTemporaryFilesForAccountDeletion()
+        if deletionIntent.phase == .relayDeletionConfirmed {
+            try await clearLocalAccountState()
+            return
+        }
+        guard let protectedSession = storedAuthSession
+            ?? pendingRegistration?.storedSession else {
+            throw AccountDeletionRecoveryError.missingProtectedSession
+        }
+        guard let relayURL = URL(string: deletionIntent.relayBaseURLString),
+              RelayURLPolicy.allows(relayURL) else {
+            throw AccountDeletionRecoveryError.invalidProtectedRelay
+        }
+        guard let identity = try await keyManager.currentIdentity() else {
+            throw AccountDeletionRecoveryError.missingDeviceIdentity
+        }
+        try AuthSessionValidator.validateStoredRecoveryAuthority(
+            protectedSession.session,
+            requestedUsername: protectedSession.session.user.username,
+            localIdentity: identity
+        )
+        try validateAccountDeletionIntent(
+            deletionIntent,
+            protectedSession: protectedSession,
+            identity: identity
+        )
+
+        // A completed pending registration is also protected recovery
+        // authority. Keep it in memory so the signed renewal path can replace
+        // an expired bearer while this deletion is reconciled.
+        storedAuthSession = protectedSession
+        relayBaseURLString = relayURL.absoluteString
+        await apiClient.updateBaseURL(relayURL)
+        await apiClient.setAuthSession(protectedSession.session)
+
+        do {
+            switch try await apiClient.attemptAccountDeletion() {
+            case .deleted:
+                break
+            case .unauthorized:
+                let challenge: LoginChallenge
+                do {
+                    challenge = try await apiClient.requestLoginChallenge(
+                        username: deletionIntent.username,
+                        deviceID: deletionIntent.deviceID
+                    )
+                } catch let apiError as APIClientError
+                    where apiError.isLoginIdentityNotFoundResponse {
+                    // The relay challenge endpoint returns 401 only when this
+                    // exact username/device identity no longer exists. This is
+                    // the expected replay after a lost successful DELETE.
+                    try confirmRelayAccountDeletion(deletionIntent)
+                    try await clearLocalAccountState()
+                    return
+                }
+
+                let renewedSession = try await performSessionRenewal(
+                    challenge: challenge,
+                    expectedAccountDeletionIntent: deletionIntent
+                )
+                await apiClient.setAuthSession(renewedSession)
+                guard try await apiClient.attemptAccountDeletion() == .deleted else {
+                    throw AccountDeletionRecoveryError.freshSessionRejected
+                }
+            }
+        } catch {
+            // Keep the persisted intent, session, signing key, and encrypted
+            // media for an exact retry. No other protected request should reuse
+            // this authority while deletion remains unresolved.
+            await apiClient.setAuthSession(nil)
+            needsAccountDeletionRetry = true
+            throw error
+        }
+
+        try confirmRelayAccountDeletion(deletionIntent)
+        try await clearLocalAccountState()
+    }
+
+    private func validateAccountDeletionIntent(
+        _ record: PendingAccountDeletionRecord,
+        protectedSession: StoredAuthSession,
+        identity: DevicePublicIdentity
+    ) throws {
+        let session = protectedSession.session
+        guard record.relayBaseURLString == protectedSession.relayBaseURLString,
+              record.userID == session.user.id,
+              record.username == session.user.username,
+              record.deviceID == session.device.id,
+              record.expectedIdentity.deviceID == identity.deviceID,
+              record.expectedIdentity.encryptionPublicKey == identity.encryptionPublicKey,
+              record.expectedIdentity.signingPublicKey == identity.signingPublicKey else {
+            throw AccountDeletionRecoveryError.intentIdentityMismatch
+        }
+    }
+
+    private func confirmRelayAccountDeletion(
+        _ record: PendingAccountDeletionRecord
+    ) throws {
+        let confirmed = record.confirmingRelayDeletion()
+        do {
+            try AccountDeletionIntentPersistence.saveAndVerify(
+                confirmed,
+                in: accountDeletionIntentStore
+            )
+        } catch {
+            isAccountDeletionIntentStorageUncertain = true
+            needsAuthenticationStorageReload = true
+            throw error
+        }
+        pendingAccountDeletion = confirmed
+    }
+
+    private func suspendPublishedAuthenticationForAccountDeletion() {
+        accountStateGeneration &+= 1
+        invalidatePlaintextProductionForBackground()
+        registrationTask?.cancel()
+        registrationTask = nil
+        registrationAttemptID = nil
+        registrationAttemptUsername = nil
+        isRegistrationInFlight = false
+        sessionRenewalTask?.cancel()
+        sessionRenewalTask = nil
+        stopRemotePolling()
+        currentUser = nil
+        deviceIdentity = nil
+        contacts = []
+        contactTrustAssessments = [:]
+        conversations = []
+        messagesByContactID = [:]
+        lastInviteCode = nil
+        activeIncomingReceiptOperations = []
+    }
+
     private func clearLocalAccountState() async throws {
         isClearingLocalAccountState = true
         defer { isClearingLocalAccountState = false }
@@ -2307,6 +2637,7 @@ final class AppState: ObservableObject {
         // Keychain authority. A crash from this point onward must resume cleanup
         // instead of restoring a partially deleted account.
         bootstrapMarkers.beginCleanup()
+        needsAccountDeletionRetry = pendingAccountDeletion != nil
         requiresFreshInstallKeychainReset = true
         accountStateGeneration &+= 1
         registrationTask?.cancel()
@@ -2350,10 +2681,14 @@ final class AppState: ObservableObject {
             needsLocalCleanupRetry = true
             throw LocalAccountCleanupError(failures: failures)
         }
+        pendingAccountDeletion = nil
+        needsAccountDeletionRetry = false
+        isAccountDeletionIntentStorageUncertain = false
         bootstrapMarkers.discardLegacySession()
         bootstrapMarkers.completeCleanup()
         requiresFreshInstallKeychainReset = false
         needsLocalCleanupRetry = false
+        mediaPipeline.reopenPlaintextProductionAfterAccountDeletionEnds()
     }
 
     private func clearResidualKeychainAfterFreshInstallIfNeeded() async throws {
@@ -2391,9 +2726,25 @@ final class AppState: ObservableObject {
 
     private func loadProtectedAuthenticationRecords() throws -> (
         session: StoredAuthSession?,
-        pending: PendingRegistrationRecord?
+        pending: PendingRegistrationRecord?,
+        accountDeletion: PendingAccountDeletionRecord?
     ) {
-        let plan = bootstrapMarkers.plan
+        let accountDeletion: PendingAccountDeletionRecord?
+        do {
+            accountDeletion = try accountDeletionIntentStore.load()
+            isAccountDeletionIntentStorageUncertain = false
+            pendingAccountDeletion = accountDeletion
+            needsAccountDeletionRetry = accountDeletion != nil
+        } catch {
+            isAccountDeletionIntentStorageUncertain = true
+            throw error
+        }
+        let plan = bootstrapMarkers.plan(
+            hasProtectedAccountDeletionIntent: accountDeletion != nil
+        )
+        if accountDeletion?.phase == .relayDeletionConfirmed {
+            return (nil, nil, accountDeletion)
+        }
         guard plan.permitsProtectedSessionRestore else {
             throw AuthenticationBootstrapBlockedError()
         }
@@ -2419,7 +2770,7 @@ final class AppState: ObservableObject {
            pending == nil {
             throw AuthSessionStoreError.ambiguousRegistrationRecovery
         }
-        return (session, pending)
+        return (session, pending, accountDeletion)
     }
 
     private func restore(_ persistedSession: StoredAuthSession) async {
@@ -2451,6 +2802,10 @@ final class AppState: ObservableObject {
     }
 
     private func renewSession() async throws -> AuthSession {
+        guard pendingAccountDeletion == nil,
+              !isAccountDeletionIntentStorageUncertain else {
+            throw AuthSessionValidationError.noRecoverableSession
+        }
         if let sessionRenewalTask {
             return try await sessionRenewalTask.value
         }
@@ -2840,8 +3195,14 @@ final class AppState: ObservableObject {
         }
     }
 
-    private func performSessionRenewal() async throws -> AuthSession {
-        guard !isClearingLocalAccountState,
+    private func performSessionRenewal(
+        challenge suppliedChallenge: LoginChallenge? = nil,
+        expectedAccountDeletionIntent: PendingAccountDeletionRecord? = nil
+    ) async throws -> AuthSession {
+        guard sessionRenewalIsAllowed(
+                  expectedAccountDeletionIntent: expectedAccountDeletionIntent
+              ),
+              !isClearingLocalAccountState,
               let previousStoredSession = storedAuthSession,
               let relayURL = URL(string: previousStoredSession.relayBaseURLString),
               RelayURLPolicy.allows(relayURL),
@@ -2858,6 +3219,12 @@ final class AppState: ObservableObject {
             }
             identity = storedIdentity
         }
+        try Task.checkCancellation()
+        guard sessionRenewalIsAllowed(
+            expectedAccountDeletionIntent: expectedAccountDeletionIntent
+        ) else {
+            throw AuthSessionValidationError.noRecoverableSession
+        }
         try AuthSessionValidator.validateStoredRecoveryAuthority(
             previousStoredSession.session,
             requestedUsername: previousStoredSession.session.user.username,
@@ -2866,10 +3233,21 @@ final class AppState: ObservableObject {
         let deviceID = previousStoredSession.session.device.id
         let username = previousStoredSession.session.user.username
 
-        let challenge = try await apiClient.requestLoginChallenge(
-            username: username,
-            deviceID: deviceID
-        )
+        let challenge: LoginChallenge
+        if let suppliedChallenge {
+            challenge = suppliedChallenge
+        } else {
+            challenge = try await apiClient.requestLoginChallenge(
+                username: username,
+                deviceID: deviceID
+            )
+        }
+        try Task.checkCancellation()
+        guard sessionRenewalIsAllowed(
+            expectedAccountDeletionIntent: expectedAccountDeletionIntent
+        ) else {
+            throw AuthSessionValidationError.noRecoverableSession
+        }
         try AuthSessionValidator.validateChallenge(challenge)
         let challengeResponse = try await keyManager.makeLoginChallengeResponse(
             challenge: challenge.challenge
@@ -2888,6 +3266,9 @@ final class AppState: ObservableObject {
         )
         try Task.checkCancellation()
         guard accountStateGeneration == renewalGeneration,
+              sessionRenewalIsAllowed(
+                  expectedAccountDeletionIntent: expectedAccountDeletionIntent
+              ),
               !isClearingLocalAccountState,
               storedAuthSession == previousStoredSession else {
             throw AuthSessionValidationError.noRecoverableSession
@@ -2902,12 +3283,32 @@ final class AppState: ObservableObject {
             in: sessionStore
         )
         guard accountStateGeneration == renewalGeneration,
+              sessionRenewalIsAllowed(
+                  expectedAccountDeletionIntent: expectedAccountDeletionIntent
+              ),
               !isClearingLocalAccountState,
               storedAuthSession == previousStoredSession else {
             throw AuthSessionValidationError.noRecoverableSession
         }
         storedAuthSession = renewedStoredSession
         return renewedSession
+    }
+
+    /// Generic protected requests must never mint or persist fresh authority
+    /// once deletion is durable (or its Keychain state is unreadable). The
+    /// only exception is the explicit deletion reconciler, bound to the exact
+    /// pending record whose stale bearer just received 401.
+    private func sessionRenewalIsAllowed(
+        expectedAccountDeletionIntent: PendingAccountDeletionRecord?
+    ) -> Bool {
+        guard !isAccountDeletionIntentStorageUncertain else {
+            return false
+        }
+        if let expectedAccountDeletionIntent {
+            return expectedAccountDeletionIntent.phase == .awaitingRelayDeletion
+                && pendingAccountDeletion == expectedAccountDeletionIntent
+        }
+        return pendingAccountDeletion == nil
     }
 
     private func cleanupProtectedAccountStateWithRetries() async -> [LocalCleanupFailure] {
@@ -2952,6 +3353,35 @@ final class AppState: ObservableObject {
             operation: { try await mediaPipeline.removeAllLocalMedia() }
         ) {
             failures.append(mediaFailure)
+        }
+        // A capture/export callback may finish after the pre-DELETE sweep.
+        // Scan the direct app temporary root again before removing the
+        // confirmed intent; an active or undeletable plaintext file keeps the
+        // crash-durable cleanup authority for a local-only retry.
+        if failures.isEmpty,
+           pendingAccountDeletion != nil,
+           let plaintextFailure = await retryCleanup(
+               label: "plaintext temporary media",
+               operation: {
+                   try await mediaPipeline
+                       .removeAbandonedPlaintextTemporaryFilesForAccountDeletion()
+               }
+           ) {
+            failures.append(plaintextFailure)
+        }
+        // Keep the crash-durable deletion phase until every other protected
+        // namespace and local media directory is gone. If cleanup is partial,
+        // a reinstall can still see the confirmed record and resume safely.
+        if failures.isEmpty,
+           let deletionFailure = await retryCleanup(
+               label: "protected account-deletion intent",
+               operation: {
+                   try AccountDeletionIntentPersistence.removeAndVerify(
+                       from: accountDeletionIntentStore
+                   )
+               }
+           ) {
+            failures.append(deletionFailure)
         }
         return failures
     }
@@ -3041,6 +3471,29 @@ private struct LocalAccountCleanupError: Error, LocalizedError {
 private struct LocalAccountRecoveryRequiredError: Error, LocalizedError {
     var errorDescription: String? {
         "Protected account recovery is incomplete. Retry local cleanup before creating replacement device keys."
+    }
+}
+
+private enum AccountDeletionRecoveryError: Error, LocalizedError {
+    case missingProtectedSession
+    case missingDeviceIdentity
+    case invalidProtectedRelay
+    case intentIdentityMismatch
+    case freshSessionRejected
+
+    var errorDescription: String? {
+        switch self {
+        case .missingProtectedSession:
+            return "Account deletion is pending, but its protected relay session is unavailable. Kithra kept the deletion record and local keys for retry."
+        case .missingDeviceIdentity:
+            return "Account deletion is pending, but its protected device identity is unavailable. Kithra kept the deletion record for recovery."
+        case .invalidProtectedRelay:
+            return "Account deletion is pending for an invalid protected relay URL. Kithra did not send or erase anything."
+        case .intentIdentityMismatch:
+            return "The protected deletion record does not match this relay account and device. Kithra refused to delete the relay account or local keys."
+        case .freshSessionRejected:
+            return "The relay rejected account deletion immediately after signed session recovery. Kithra kept the protected deletion record and local keys for retry."
+        }
     }
 }
 

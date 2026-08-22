@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -19,13 +20,14 @@ import (
 
 type failingDeleteStore struct {
 	storage.Store
-	mu          sync.Mutex
-	failDeletes bool
+	mu            sync.Mutex
+	failDeletes   bool
+	failDeleteKey string
 }
 
 func (s *failingDeleteStore) Delete(ctx context.Context, key string) error {
 	s.mu.Lock()
-	fail := s.failDeletes
+	fail := s.failDeletes || s.failDeleteKey == key
 	s.mu.Unlock()
 	if fail {
 		return errors.New("injected delete failure")
@@ -36,6 +38,12 @@ func (s *failingDeleteStore) Delete(ctx context.Context, key string) error {
 func (s *failingDeleteStore) setFailDeletes(fail bool) {
 	s.mu.Lock()
 	s.failDeletes = fail
+	s.mu.Unlock()
+}
+
+func (s *failingDeleteStore) setFailDeleteKey(key string) {
+	s.mu.Lock()
+	s.failDeleteKey = key
 	s.mu.Unlock()
 }
 
@@ -78,10 +86,57 @@ func TestDeleteMessageKeepsBlobPathWhenStorageDeletionFails(t *testing.T) {
 	}
 }
 
-func TestDeleteAccountKeepsRecordsWhenAnyBlobDeletionFails(t *testing.T) {
+func TestDeleteAccountRetriesSenderRecipientAndPendingCiphertextSafely(t *testing.T) {
 	database, relay, blobStore := newHardeningTestRelay(t, Options{RetentionDays: 7})
-	_, bob, message := createPendingTestMessage(t, relay.URL)
-	blobStore.setFailDeletes(true)
+	alice, bob, incoming := createPendingTestMessage(t, relay.URL)
+	outgoing := uploadTestMessage(
+		t,
+		relay.URL,
+		bob.BearerToken,
+		alice.User.ID,
+		alice.Device.ID,
+		validTestEnvelope(t, bob.Device.ID, alice.Device.ID),
+		[]byte("outgoing pending ciphertext"),
+	)
+
+	const pendingAsSender = "messages/000-account-delete-pending-sender.blob"
+	const pendingAsRecipient = "messages/zzz-account-delete-pending-recipient.blob"
+	const unrelatedPending = "messages/zzzz-account-delete-unrelated.blob"
+	pendingWrites := []struct {
+		path        string
+		senderID    string
+		recipientID string
+		ciphertext  string
+		state       string
+	}{
+		{pendingAsSender, bob.User.ID, alice.User.ID, "pending as sender", "pending"},
+		{pendingAsRecipient, alice.User.ID, bob.User.ID, "pending as recipient", "cleaning"},
+		{unrelatedPending, "unrelated-sender", "unrelated-recipient", "unrelated pending", "pending"},
+	}
+	for _, pending := range pendingWrites {
+		if _, err := database.ExecContext(
+			context.Background(),
+			`INSERT INTO pending_blob_writes(
+				blob_path, sender_user_id, recipient_user_id, blob_size, state, created_at
+			 ) VALUES (?, ?, ?, ?, ?, ?)`,
+			pending.path,
+			pending.senderID,
+			pending.recipientID,
+			len(pending.ciphertext),
+			pending.state,
+			time.Now().UTC().Format(time.RFC3339),
+		); err != nil {
+			t.Fatalf("insert pending blob write %q: %v", pending.path, err)
+		}
+		if err := blobStore.Write(context.Background(), pending.path, strings.NewReader(pending.ciphertext)); err != nil {
+			t.Fatalf("write pending ciphertext %q: %v", pending.path, err)
+		}
+	}
+
+	// Deletion is ordered by path. This failure occurs after pendingAsSender has
+	// been deleted and before pendingAsRecipient, proving that a partial storage
+	// pass leaves every ownership row and the authenticated session retryable.
+	blobStore.setFailDeleteKey(incoming.EncryptedBlobPath)
 
 	request := authedRequest(t, http.MethodDelete, relay.URL+"/account", bob.BearerToken, nil)
 	doRequest(t, request, http.StatusInternalServerError, nil)
@@ -93,12 +148,230 @@ func TestDeleteAccountKeepsRecordsWhenAnyBlobDeletionFails(t *testing.T) {
 	if userCount != 1 {
 		t.Fatalf("user count after failed account deletion = %d, want 1", userCount)
 	}
-	var blobPath string
-	if err := database.QueryRowContext(context.Background(), `SELECT encrypted_blob_path FROM messages WHERE id = ?`, message.ID).Scan(&blobPath); err != nil {
-		t.Fatalf("read message after failed account deletion: %v", err)
+	var messageCount int
+	if err := database.QueryRowContext(
+		context.Background(),
+		`SELECT COUNT(*) FROM messages WHERE id IN (?, ?)`,
+		incoming.ID,
+		outgoing.ID,
+	).Scan(&messageCount); err != nil {
+		t.Fatalf("count messages after failed account deletion: %v", err)
 	}
-	if blobPath == "" {
-		t.Fatal("account deletion cleared blob path after storage deletion failed")
+	if messageCount != 2 {
+		t.Fatalf("message count after failed account deletion = %d, want 2", messageCount)
+	}
+	var relatedPendingCount int
+	if err := database.QueryRowContext(
+		context.Background(),
+		`SELECT COUNT(*)
+		   FROM pending_blob_writes
+		  WHERE sender_user_id = ? OR recipient_user_id = ?`,
+		bob.User.ID,
+		bob.User.ID,
+	).Scan(&relatedPendingCount); err != nil {
+		t.Fatalf("count pending writes after failed account deletion: %v", err)
+	}
+	if relatedPendingCount != 2 {
+		t.Fatalf("pending write count after failed account deletion = %d, want 2", relatedPendingCount)
+	}
+	var sessionCount int
+	if err := database.QueryRowContext(
+		context.Background(),
+		`SELECT COUNT(*) FROM sessions WHERE token = ?`,
+		bearerTokenHash(bob.BearerToken),
+	).Scan(&sessionCount); err != nil {
+		t.Fatalf("count session after failed account deletion: %v", err)
+	}
+	if sessionCount != 1 {
+		t.Fatalf("session count after failed account deletion = %d, want 1", sessionCount)
+	}
+	if reader, err := blobStore.Read(context.Background(), pendingAsSender); err == nil {
+		reader.Close()
+		t.Fatal("ciphertext deleted before injected failure unexpectedly remained")
+	}
+	for _, retainedPath := range []string{incoming.EncryptedBlobPath, pendingAsRecipient} {
+		reader, err := blobStore.Read(context.Background(), retainedPath)
+		if err != nil {
+			t.Fatalf("ciphertext %q after failed account deletion: %v", retainedPath, err)
+		}
+		reader.Close()
+	}
+
+	blobStore.setFailDeleteKey("")
+	request = authedRequest(t, http.MethodDelete, relay.URL+"/account", bob.BearerToken, nil)
+	doRequest(t, request, http.StatusNoContent, nil)
+
+	if err := database.QueryRowContext(context.Background(), `SELECT COUNT(*) FROM users WHERE id = ?`, bob.User.ID).Scan(&userCount); err != nil {
+		t.Fatalf("count user after retried account deletion: %v", err)
+	}
+	if userCount != 0 {
+		t.Fatalf("user count after retried account deletion = %d, want 0", userCount)
+	}
+	if err := database.QueryRowContext(
+		context.Background(),
+		`SELECT COUNT(*) FROM messages WHERE id IN (?, ?)`,
+		incoming.ID,
+		outgoing.ID,
+	).Scan(&messageCount); err != nil {
+		t.Fatalf("count messages after retried account deletion: %v", err)
+	}
+	if messageCount != 0 {
+		t.Fatalf("message count after retried account deletion = %d, want 0", messageCount)
+	}
+	if err := database.QueryRowContext(
+		context.Background(),
+		`SELECT COUNT(*)
+		   FROM pending_blob_writes
+		  WHERE sender_user_id = ? OR recipient_user_id = ?`,
+		bob.User.ID,
+		bob.User.ID,
+	).Scan(&relatedPendingCount); err != nil {
+		t.Fatalf("count pending writes after retried account deletion: %v", err)
+	}
+	if relatedPendingCount != 0 {
+		t.Fatalf("pending write count after retried account deletion = %d, want 0", relatedPendingCount)
+	}
+	for _, deletedPath := range []string{
+		incoming.EncryptedBlobPath,
+		outgoing.EncryptedBlobPath,
+		pendingAsSender,
+		pendingAsRecipient,
+	} {
+		if reader, err := blobStore.Read(context.Background(), deletedPath); err == nil {
+			reader.Close()
+			t.Fatalf("account ciphertext %q remained after retry", deletedPath)
+		}
+	}
+	var unrelatedPendingCount int
+	if err := database.QueryRowContext(
+		context.Background(),
+		`SELECT COUNT(*) FROM pending_blob_writes WHERE blob_path = ?`,
+		unrelatedPending,
+	).Scan(&unrelatedPendingCount); err != nil {
+		t.Fatalf("count unrelated pending write: %v", err)
+	}
+	if unrelatedPendingCount != 1 {
+		t.Fatalf("unrelated pending write count = %d, want 1", unrelatedPendingCount)
+	}
+	if reader, err := blobStore.Read(context.Background(), unrelatedPending); err != nil {
+		t.Fatalf("unrelated pending ciphertext was deleted: %v", err)
+	} else {
+		reader.Close()
+	}
+}
+
+func TestUploadRevalidatesAccountsAfterConcurrentDeletion(t *testing.T) {
+	tests := []struct {
+		name       string
+		deleteUser string
+		wantStatus int
+	}{
+		{name: "sender", deleteUser: "sender", wantStatus: http.StatusUnauthorized},
+		{name: "recipient", deleteUser: "recipient", wantStatus: http.StatusForbidden},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			database, err := db.Open(context.Background(), ":memory:")
+			if err != nil {
+				t.Fatalf("db.Open() error = %v", err)
+			}
+			t.Cleanup(func() { database.Close() })
+
+			localStore, err := storage.NewLocal(t.TempDir())
+			if err != nil {
+				t.Fatalf("storage.NewLocal() error = %v", err)
+			}
+			blobStore := &writeTrackingStore{Store: localStore}
+			server := NewWithOptions(database, blobStore, Options{RetentionDays: 7})
+			relay := httptest.NewServer(server.Handler())
+			t.Cleanup(relay.Close)
+
+			alice := registerTestDevice(t, relay.URL, "concurrent-delete-alice-"+test.name)
+			bob := registerTestDevice(t, relay.URL, "concurrent-delete-bob-"+test.name)
+			invite := createInvite(t, relay.URL, alice.BearerToken)
+			_ = acceptInvite(t, relay.URL, bob.BearerToken, invite.Code)
+
+			uploadPaused := make(chan struct{})
+			resumeUpload := make(chan struct{})
+			var resumeOnce sync.Once
+			resume := func() {
+				resumeOnce.Do(func() { close(resumeUpload) })
+			}
+			defer resume()
+			server.beforeUploadMutationLock = func() {
+				close(uploadPaused)
+				<-resumeUpload
+			}
+
+			request := newUploadRequest(
+				t,
+				relay.URL,
+				alice.BearerToken,
+				bob.User.ID,
+				bob.Device.ID,
+				validTestEnvelope(t, alice.Device.ID, bob.Device.ID),
+				[]byte("concurrent account deletion ciphertext"),
+			)
+			type uploadResult struct {
+				status int
+				err    error
+			}
+			result := make(chan uploadResult, 1)
+			go func() {
+				response, err := http.DefaultClient.Do(request)
+				if err != nil {
+					result <- uploadResult{err: err}
+					return
+				}
+				_, _ = io.Copy(io.Discard, response.Body)
+				_ = response.Body.Close()
+				result <- uploadResult{status: response.StatusCode}
+			}()
+
+			select {
+			case <-uploadPaused:
+			case <-time.After(5 * time.Second):
+				t.Fatal("upload did not pause before the blob mutation lock")
+			}
+
+			deletedAccount := alice
+			if test.deleteUser == "recipient" {
+				deletedAccount = bob
+			}
+			deleteAccount(t, relay.URL, deletedAccount.BearerToken)
+			resume()
+
+			select {
+			case upload := <-result:
+				if upload.err != nil {
+					t.Fatalf("upload after account deletion: %v", upload.err)
+				}
+				if upload.status != test.wantStatus {
+					t.Fatalf("upload after %s deletion status = %d, want %d", test.deleteUser, upload.status, test.wantStatus)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("upload did not finish after account deletion")
+			}
+
+			if blobStore.writes != 0 {
+				t.Fatalf("blob writes after %s deletion = %d, want 0", test.deleteUser, blobStore.writes)
+			}
+			var pendingCount int
+			if err := database.QueryRowContext(context.Background(), `SELECT COUNT(*) FROM pending_blob_writes`).Scan(&pendingCount); err != nil {
+				t.Fatalf("count pending writes after concurrent deletion: %v", err)
+			}
+			if pendingCount != 0 {
+				t.Fatalf("pending writes after %s deletion = %d, want 0", test.deleteUser, pendingCount)
+			}
+			var messageCount int
+			if err := database.QueryRowContext(context.Background(), `SELECT COUNT(*) FROM messages`).Scan(&messageCount); err != nil {
+				t.Fatalf("count messages after concurrent deletion: %v", err)
+			}
+			if messageCount != 0 {
+				t.Fatalf("messages after %s deletion = %d, want 0", test.deleteUser, messageCount)
+			}
+		})
 	}
 }
 

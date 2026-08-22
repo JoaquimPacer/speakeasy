@@ -7,6 +7,7 @@ import XCTest
 final class AuthenticationTests: XCTestCase {
     override func tearDown() {
         AuthenticationURLProtocol.handler = nil
+        AuthenticationURLProtocol.responseHeaders = nil
         super.tearDown()
     }
 
@@ -80,6 +81,44 @@ final class AuthenticationTests: XCTestCase {
         )
 
         try PendingRegistrationPersistence.removeAndVerify(from: store)
+    }
+
+    func testAccountDeletionIntentStoreRoundTripsWithThisDeviceOnlyAccessibility() throws {
+        let service = "com.speakeasy.auth-session.tests.\(UUID().uuidString)"
+        let account = "account-deletion-intent"
+        let store = KeychainAccountDeletionIntentStore(
+            service: service,
+            account: account
+        )
+        defer { try? store.remove() }
+        let session = makeSession(token: "deletion-intent-token")
+        let record = PendingAccountDeletionRecord(
+            protectedSession: StoredAuthSession(
+                relayBaseURLString: "https://relay.example.test",
+                session: session
+            ),
+            identity: boundIdentity(for: session)
+        )
+
+        try AccountDeletionIntentPersistence.saveAndVerify(record, in: store)
+        XCTAssertEqual(try store.load(), record)
+
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account,
+            kSecReturnAttributes as String: true,
+            kSecMatchLimit as String: kSecMatchLimitOne
+        ]
+        var item: CFTypeRef?
+        XCTAssertEqual(SecItemCopyMatching(query as CFDictionary, &item), errSecSuccess)
+        let attributes = try XCTUnwrap(item as? [String: Any])
+        XCTAssertEqual(
+            attributes[kSecAttrAccessible as String] as? String,
+            kSecAttrAccessibleWhenUnlockedThisDeviceOnly as String
+        )
+
+        try AccountDeletionIntentPersistence.removeAndVerify(from: store)
     }
 
     func testLegacyPendingRegistrationDecodesDeviceFieldsFromCompletedSession() throws {
@@ -349,6 +388,7 @@ final class AuthenticationTests: XCTestCase {
             keyManager: keyManager,
             sessionStore: sessionStore,
             pendingRegistrationStore: pendingStore,
+            accountDeletionIntentStore: InMemoryAccountDeletionIntentStore(),
             registrationDeviceIDProvider: { deviceID },
             preferences: preferences,
             seedPreviewData: false
@@ -418,6 +458,7 @@ final class AuthenticationTests: XCTestCase {
             keyManager: keyManager,
             sessionStore: sessionStore,
             pendingRegistrationStore: pendingStore,
+            accountDeletionIntentStore: InMemoryAccountDeletionIntentStore(),
             registrationDeviceIDProvider: { session.device.id },
             preferences: preferences,
             seedPreviewData: false
@@ -481,6 +522,7 @@ final class AuthenticationTests: XCTestCase {
             keyManager: keyManager,
             sessionStore: sessionStore,
             pendingRegistrationStore: pendingStore,
+            accountDeletionIntentStore: InMemoryAccountDeletionIntentStore(),
             registrationDeviceIDProvider: { session.device.id },
             preferences: preferences,
             seedPreviewData: false
@@ -534,6 +576,7 @@ final class AuthenticationTests: XCTestCase {
             keyManager: keyManager,
             sessionStore: InMemoryAuthSessionStore(),
             pendingRegistrationStore: pendingStore,
+            accountDeletionIntentStore: InMemoryAccountDeletionIntentStore(),
             registrationDeviceIDProvider: { requestedDeviceID },
             preferences: preferences,
             seedPreviewData: false
@@ -595,6 +638,7 @@ final class AuthenticationTests: XCTestCase {
             keyManager: keyManager,
             sessionStore: sessionStore,
             pendingRegistrationStore: pendingStore,
+            accountDeletionIntentStore: InMemoryAccountDeletionIntentStore(),
             preferences: preferences,
             seedPreviewData: false
         )
@@ -648,6 +692,7 @@ final class AuthenticationTests: XCTestCase {
             keyManager: keyManager,
             sessionStore: InMemoryAuthSessionStore(),
             pendingRegistrationStore: pendingStore,
+            accountDeletionIntentStore: InMemoryAccountDeletionIntentStore(),
             preferences: preferences,
             seedPreviewData: false
         )
@@ -719,6 +764,7 @@ final class AuthenticationTests: XCTestCase {
             keyManager: keyManager,
             sessionStore: sessionStore,
             pendingRegistrationStore: InMemoryPendingRegistrationStore(),
+            accountDeletionIntentStore: InMemoryAccountDeletionIntentStore(),
             preferences: preferences,
             seedPreviewData: false
         )
@@ -794,6 +840,7 @@ final class AuthenticationTests: XCTestCase {
             keyManager: RegistrationRecoveryKeyManager(identity: identity),
             sessionStore: sessionStore,
             pendingRegistrationStore: InMemoryPendingRegistrationStore(),
+            accountDeletionIntentStore: InMemoryAccountDeletionIntentStore(),
             preferences: preferences,
             seedPreviewData: false
         )
@@ -846,6 +893,7 @@ final class AuthenticationTests: XCTestCase {
                 session: legacy
             )),
             pendingRegistrationStore: InMemoryPendingRegistrationStore(),
+            accountDeletionIntentStore: InMemoryAccountDeletionIntentStore(),
             preferences: preferences,
             seedPreviewData: false
         )
@@ -890,6 +938,7 @@ final class AuthenticationTests: XCTestCase {
             keyManager: RegistrationRecoveryKeyManager(identity: identity),
             sessionStore: InMemoryAuthSessionStore(),
             pendingRegistrationStore: InMemoryPendingRegistrationStore(),
+            accountDeletionIntentStore: InMemoryAccountDeletionIntentStore(),
             registrationDeviceIDProvider: { session.device.id },
             preferences: preferences,
             seedPreviewData: false
@@ -951,6 +1000,7 @@ final class AuthenticationTests: XCTestCase {
             keyManager: RegistrationRecoveryKeyManager(identity: identity),
             sessionStore: sessionStore,
             pendingRegistrationStore: pendingStore,
+            accountDeletionIntentStore: InMemoryAccountDeletionIntentStore(),
             registrationDeviceIDProvider: { session.device.id },
             preferences: preferences,
             seedPreviewData: false
@@ -996,6 +1046,7 @@ final class AuthenticationTests: XCTestCase {
             keyManager: keyManager,
             sessionStore: sessionStore,
             pendingRegistrationStore: pendingStore,
+            accountDeletionIntentStore: InMemoryAccountDeletionIntentStore(),
             preferences: preferences,
             seedPreviewData: false
         )
@@ -1058,6 +1109,7 @@ final class AuthenticationTests: XCTestCase {
             keyManager: RegistrationRecoveryKeyManager(identity: identity),
             sessionStore: sessionStore,
             pendingRegistrationStore: pendingStore,
+            accountDeletionIntentStore: InMemoryAccountDeletionIntentStore(),
             preferences: preferences,
             seedPreviewData: false
         )
@@ -1117,6 +1169,7 @@ final class AuthenticationTests: XCTestCase {
             keyManager: keyManager,
             sessionStore: sessionStore,
             pendingRegistrationStore: pendingStore,
+            accountDeletionIntentStore: InMemoryAccountDeletionIntentStore(),
             registrationDeviceIDProvider: {
                 generatedDeviceIDCount += 1
                 return deviceID
@@ -1196,6 +1249,7 @@ final class AuthenticationTests: XCTestCase {
             keyManager: keyManager,
             sessionStore: sessionStore,
             pendingRegistrationStore: pendingStore,
+            accountDeletionIntentStore: InMemoryAccountDeletionIntentStore(),
             registrationDeviceIDProvider: {
                 generatedDeviceIDCount += 1
                 return UUID()
@@ -1259,6 +1313,7 @@ final class AuthenticationTests: XCTestCase {
             keyManager: RegistrationRecoveryKeyManager(identity: identity),
             sessionStore: InMemoryAuthSessionStore(),
             pendingRegistrationStore: pendingStore,
+            accountDeletionIntentStore: InMemoryAccountDeletionIntentStore(),
             registrationDeviceIDProvider: { deviceID },
             preferences: preferences,
             seedPreviewData: false
@@ -1321,6 +1376,7 @@ final class AuthenticationTests: XCTestCase {
             keyManager: RegistrationRecoveryKeyManager(identity: identity),
             sessionStore: InMemoryAuthSessionStore(),
             pendingRegistrationStore: pendingStore,
+            accountDeletionIntentStore: InMemoryAccountDeletionIntentStore(),
             registrationDeviceIDProvider: {
                 generatedDeviceIDCount += 1
                 return deviceID
@@ -1386,6 +1442,7 @@ final class AuthenticationTests: XCTestCase {
             keyManager: RegistrationRecoveryKeyManager(identity: identity),
             sessionStore: InMemoryAuthSessionStore(),
             pendingRegistrationStore: pendingStore,
+            accountDeletionIntentStore: InMemoryAccountDeletionIntentStore(),
             preferences: preferences,
             seedPreviewData: false
         )
@@ -1443,6 +1500,7 @@ final class AuthenticationTests: XCTestCase {
             messageReplayStore: EmptyMessageReplayStore(),
             sessionStore: sessionStore,
             pendingRegistrationStore: pendingStore,
+            accountDeletionIntentStore: InMemoryAccountDeletionIntentStore(),
             preferences: preferences,
             seedPreviewData: false
         )
@@ -1461,6 +1519,1046 @@ final class AuthenticationTests: XCTestCase {
         XCTAssertFalse(state.needsLocalCleanupRetry)
         XCTAssertFalse(markers.hasRegistrationUncertainty)
         XCTAssertNil(markers.cleanupStatus)
+    }
+
+    @MainActor
+    func testAccountDeletionVerifiesProtectedIntentBeforeExact204AndCleansLocally() async throws {
+        let suiteName = "KithraAccountDeletionTests.\(UUID().uuidString)"
+        let preferences = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { preferences.removePersistentDomain(forName: suiteName) }
+        preferences.set(true, forKey: LocalAccountBootstrapMarkers.installMarkerKey)
+
+        let session = makeSession(token: "delete-token")
+        let identity = boundIdentity(for: session)
+        let keyManager = RegistrationRecoveryKeyManager(identity: identity)
+        let sessionStore = InMemoryAuthSessionStore(storedSession: StoredAuthSession(
+            relayBaseURLString: "https://relay.example.test",
+            session: session
+        ))
+        let deletionStore = InMemoryAccountDeletionIntentStore()
+        let mediaRoot = deletionMediaRoot()
+        defer { try? FileManager.default.removeItem(at: mediaRoot) }
+        var deleteCount = 0
+        AuthenticationURLProtocol.handler = { request in
+            switch request.url?.path {
+            case "/contacts", "/messages":
+                return (200, Data("[]".utf8))
+            case "/account":
+                deleteCount += 1
+                XCTAssertTrue(deletionStore.didVerifySavedValue)
+                XCTAssertEqual(deletionStore.record?.phase, .awaitingRelayDeletion)
+                XCTAssertEqual(
+                    request.value(forHTTPHeaderField: "Authorization"),
+                    "Bearer delete-token"
+                )
+                return (204, Data())
+            default:
+                return (404, Data())
+            }
+        }
+
+        let state = makeDeletionState(
+            sessionStore: sessionStore,
+            deletionStore: deletionStore,
+            keyManager: keyManager,
+            mediaRoot: mediaRoot,
+            preferences: preferences
+        )
+        try await waitUntil { state.currentUser == session.user }
+        let relayURL = state.relayBaseURLString
+
+        await state.deleteAccount()
+
+        XCTAssertEqual(deleteCount, 1)
+        XCTAssertNil(deletionStore.record)
+        XCTAssertNil(sessionStore.storedSession)
+        XCTAssertNil(keyManager.identity)
+        XCTAssertNil(state.currentUser)
+        XCTAssertFalse(state.needsAccountDeletionRetry)
+        XCTAssertFalse(state.needsLocalCleanupRetry)
+        XCTAssertEqual(state.relayBaseURLString, relayURL)
+        XCTAssertNil(LocalAccountBootstrapMarkers(preferences: preferences).cleanupStatus)
+    }
+
+    @MainActor
+    func testPendingDeletionFencesDelayedOrdinary401RecoveryAndRetry() async throws {
+        let suiteName = "KithraAccountDeletionTests.\(UUID().uuidString)"
+        let preferences = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { preferences.removePersistentDomain(forName: suiteName) }
+        preferences.set(true, forKey: LocalAccountBootstrapMarkers.installMarkerKey)
+
+        let session = makeSession(token: "ordinary-race-token")
+        let identity = boundIdentity(for: session)
+        let keyManager = RegistrationRecoveryKeyManager(identity: identity)
+        let sessionStore = InMemoryAuthSessionStore(storedSession: StoredAuthSession(
+            relayBaseURLString: "https://relay.example.test",
+            session: session
+        ))
+        let deletionStore = InMemoryAccountDeletionIntentStore()
+        let mediaRoot = deletionMediaRoot()
+        defer { try? FileManager.default.removeItem(at: mediaRoot) }
+
+        AuthenticationURLProtocol.handler = { request in
+            switch request.url?.path {
+            case "/contacts", "/messages":
+                return (200, Data("[]".utf8))
+            default:
+                return (404, Data())
+            }
+        }
+        let state = makeDeletionState(
+            sessionStore: sessionStore,
+            deletionStore: deletionStore,
+            keyManager: keyManager,
+            mediaRoot: mediaRoot,
+            preferences: preferences
+        )
+        try await waitUntil { state.currentUser == session.user && !state.isRestoringSession }
+
+        let staleRequestGate = RegistrationRequestGate()
+        defer { staleRequestGate.open() }
+        var protectedRequestCount = 0
+        var challengeCount = 0
+        var loginCount = 0
+        var deleteCount = 0
+        AuthenticationURLProtocol.handler = { request in
+            switch request.url?.path {
+            case "/contacts":
+                protectedRequestCount += 1
+                staleRequestGate.recordRequestAndWait()
+                return (401, Data("expired".utf8))
+            case "/account":
+                deleteCount += 1
+                XCTAssertTrue(deletionStore.didVerifySavedValue)
+                XCTAssertEqual(deletionStore.record?.phase, .awaitingRelayDeletion)
+                return (500, Data("retry deletion".utf8))
+            case "/auth/challenge":
+                challengeCount += 1
+                return (500, Data())
+            case "/auth/login":
+                loginCount += 1
+                return (500, Data())
+            default:
+                return (404, Data())
+            }
+        }
+
+        let staleRefresh = Task { @MainActor in
+            await state.refresh()
+        }
+        try await waitUntil { staleRequestGate.requestCount == 1 }
+        let deletion = Task { @MainActor in
+            await state.deleteAccount()
+        }
+        try await waitUntil {
+            deletionStore.record?.phase == .awaitingRelayDeletion
+                && state.currentUser == nil
+        }
+        // Release the stale 401 only after the deletion record is durable.
+        // This avoids depending on URLSession running two protocol callbacks
+        // concurrently while still exercising the post-intent recovery race.
+        staleRequestGate.open()
+        await staleRefresh.value
+        await deletion.value
+
+        XCTAssertEqual(deleteCount, 1)
+        XCTAssertEqual(protectedRequestCount, 1, "The stale protected request must not retry")
+        XCTAssertEqual(challengeCount, 0, "Generic recovery is forbidden after deletion is durable")
+        XCTAssertEqual(loginCount, 0)
+        XCTAssertEqual(deletionStore.record?.phase, .awaitingRelayDeletion)
+        XCTAssertNil(state.currentUser)
+        XCTAssertNotNil(sessionStore.storedSession)
+        XCTAssertNotNil(keyManager.identity)
+    }
+
+    @MainActor
+    func testConfirmedDeletionRetainsIntentWhenProtectedCleanupFailsThenRetriesLocally() async throws {
+        let suiteName = "KithraAccountDeletionTests.\(UUID().uuidString)"
+        let preferences = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { preferences.removePersistentDomain(forName: suiteName) }
+        preferences.set(true, forKey: LocalAccountBootstrapMarkers.installMarkerKey)
+
+        let session = makeSession(token: "cleanup-retry-token")
+        let identity = boundIdentity(for: session)
+        let keyManager = RegistrationRecoveryKeyManager(identity: identity)
+        let sessionStore = InMemoryAuthSessionStore(
+            storedSession: StoredAuthSession(
+                relayBaseURLString: "https://relay.example.test",
+                session: session
+            ),
+            removeError: AuthenticationTestError.saveFailed
+        )
+        let deletionStore = InMemoryAccountDeletionIntentStore()
+        let mediaRoot = deletionMediaRoot()
+        defer { try? FileManager.default.removeItem(at: mediaRoot) }
+        var deleteCount = 0
+        AuthenticationURLProtocol.handler = { request in
+            switch request.url?.path {
+            case "/contacts", "/messages":
+                return (200, Data("[]".utf8))
+            case "/account":
+                deleteCount += 1
+                return (204, Data())
+            default:
+                return (404, Data())
+            }
+        }
+        let state = makeDeletionState(
+            sessionStore: sessionStore,
+            deletionStore: deletionStore,
+            keyManager: keyManager,
+            mediaRoot: mediaRoot,
+            preferences: preferences
+        )
+        try await waitUntil { state.currentUser == session.user && !state.isRestoringSession }
+
+        await state.deleteAccount()
+
+        XCTAssertEqual(deleteCount, 1)
+        XCTAssertEqual(deletionStore.record?.phase, .relayDeletionConfirmed)
+        XCTAssertNotNil(sessionStore.storedSession)
+        XCTAssertNil(state.currentUser)
+        XCTAssertNil(state.deviceIdentity)
+        XCTAssertTrue(state.needsLocalCleanupRetry)
+
+        sessionStore.removeError = nil
+        await state.retryPendingAccountDeletion()
+
+        XCTAssertEqual(deleteCount, 1, "Confirmed cleanup retry must not contact the relay")
+        XCTAssertNil(deletionStore.record)
+        XCTAssertNil(sessionStore.storedSession)
+        XCTAssertNil(keyManager.identity)
+        XCTAssertFalse(state.needsAccountDeletionRetry)
+        XCTAssertFalse(state.needsLocalCleanupRetry)
+    }
+
+    @MainActor
+    func testPostClosePlaintextReservationIsRejectedBeforeFinalSweep() async throws {
+        let suiteName = "KithraAccountDeletionTests.\(UUID().uuidString)"
+        let preferences = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { preferences.removePersistentDomain(forName: suiteName) }
+        preferences.set(true, forKey: LocalAccountBootstrapMarkers.installMarkerKey)
+
+        let session = makeSession(token: "late-plaintext-token")
+        let identity = boundIdentity(for: session)
+        let keyManager = RegistrationRecoveryKeyManager(identity: identity)
+        let sessionStore = InMemoryAuthSessionStore(storedSession: StoredAuthSession(
+            relayBaseURLString: "https://relay.example.test",
+            session: session
+        ))
+        let deletionStore = InMemoryAccountDeletionIntentStore()
+        let mediaRoot = deletionMediaRoot()
+        defer { try? FileManager.default.removeItem(at: mediaRoot) }
+        let janitor = KithraPlaintextTempFileJanitor()
+        let lateURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("kithra-inline-\(UUID().uuidString)")
+            .appendingPathExtension("mov")
+        defer {
+            janitor.release(lateURL)
+            try? FileManager.default.removeItem(at: lateURL)
+        }
+        var deleteCount = 0
+        var reservationWasRejected = false
+        AuthenticationURLProtocol.handler = { request in
+            switch request.url?.path {
+            case "/contacts", "/messages":
+                return (200, Data("[]".utf8))
+            case "/account":
+                deleteCount += 1
+                do {
+                    try janitor.preserveWhileInUse(lateURL)
+                    try Data("late plaintext".utf8).write(to: lateURL)
+                    XCTFail("The closed deletion gate must reject a late producer")
+                } catch MediaPipelineError.plaintextProductionInvalidated {
+                    reservationWasRejected = true
+                }
+                return (204, Data())
+            default:
+                return (404, Data())
+            }
+        }
+        let state = makeDeletionState(
+            sessionStore: sessionStore,
+            deletionStore: deletionStore,
+            keyManager: keyManager,
+            mediaRoot: mediaRoot,
+            plaintextTempJanitor: janitor,
+            preferences: preferences
+        )
+        try await waitUntil { state.currentUser == session.user && !state.isRestoringSession }
+
+        await state.deleteAccount()
+
+        XCTAssertEqual(deleteCount, 1)
+        XCTAssertTrue(reservationWasRejected)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: lateURL.path))
+        XCTAssertNil(deletionStore.record)
+        XCTAssertFalse(state.needsLocalCleanupRetry)
+    }
+
+    @MainActor
+    func testAccountDeletionReadbackMismatchPreventsHTTPAndKeepsActiveAuthority() async throws {
+        let suiteName = "KithraAccountDeletionTests.\(UUID().uuidString)"
+        let preferences = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { preferences.removePersistentDomain(forName: suiteName) }
+        preferences.set(true, forKey: LocalAccountBootstrapMarkers.installMarkerKey)
+
+        let session = makeSession(token: "readback-token")
+        let stored = StoredAuthSession(
+            relayBaseURLString: "https://relay.example.test",
+            session: session
+        )
+        let identity = boundIdentity(for: session)
+        let keyManager = RegistrationRecoveryKeyManager(identity: identity)
+        let sessionStore = InMemoryAuthSessionStore(storedSession: stored)
+        let mismatchedReadback = PendingAccountDeletionRecord(
+            protectedSession: stored,
+            identity: identity,
+            phase: .relayDeletionConfirmed
+        )
+        let deletionStore = InMemoryAccountDeletionIntentStore(
+            postSaveReadback: mismatchedReadback
+        )
+        let mediaRoot = deletionMediaRoot()
+        defer { try? FileManager.default.removeItem(at: mediaRoot) }
+        var deleteCount = 0
+        AuthenticationURLProtocol.handler = { request in
+            switch request.url?.path {
+            case "/contacts", "/messages":
+                return (200, Data("[]".utf8))
+            case "/account":
+                deleteCount += 1
+                return (204, Data())
+            default:
+                return (404, Data())
+            }
+        }
+        let state = makeDeletionState(
+            sessionStore: sessionStore,
+            deletionStore: deletionStore,
+            keyManager: keyManager,
+            mediaRoot: mediaRoot,
+            preferences: preferences
+        )
+        try await waitUntil { state.currentUser == session.user }
+
+        await state.deleteAccount()
+
+        XCTAssertEqual(deleteCount, 0)
+        XCTAssertEqual(deletionStore.record?.phase, .awaitingRelayDeletion)
+        XCTAssertFalse(deletionStore.didVerifySavedValue)
+        XCTAssertNil(state.currentUser)
+        XCTAssertTrue(state.isAccountDeletionIntentStorageUncertain)
+        XCTAssertTrue(state.needsAuthenticationStorageReload)
+        XCTAssertNotNil(sessionStore.storedSession)
+        XCTAssertNotNil(keyManager.identity)
+    }
+
+    @MainActor
+    func testDefinitiveIntentSaveFailureReloadsNormalSessionWithoutDeletionState() async throws {
+        let suiteName = "KithraAccountDeletionTests.\(UUID().uuidString)"
+        let preferences = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { preferences.removePersistentDomain(forName: suiteName) }
+        preferences.set(true, forKey: LocalAccountBootstrapMarkers.installMarkerKey)
+        let session = makeSession(token: "save-failure-token")
+        let keyManager = RegistrationRecoveryKeyManager(identity: boundIdentity(for: session))
+        let sessionStore = InMemoryAuthSessionStore(storedSession: StoredAuthSession(
+            relayBaseURLString: "https://relay.example.test",
+            session: session
+        ))
+        let deletionStore = InMemoryAccountDeletionIntentStore(
+            saveError: AuthenticationTestError.saveFailed
+        )
+        let mediaRoot = deletionMediaRoot()
+        defer { try? FileManager.default.removeItem(at: mediaRoot) }
+        var deleteCount = 0
+        AuthenticationURLProtocol.handler = { request in
+            switch request.url?.path {
+            case "/contacts", "/messages":
+                return (200, Data("[]".utf8))
+            case "/account":
+                deleteCount += 1
+                return (204, Data())
+            default:
+                return (404, Data())
+            }
+        }
+        let state = makeDeletionState(
+            sessionStore: sessionStore,
+            deletionStore: deletionStore,
+            keyManager: keyManager,
+            mediaRoot: mediaRoot,
+            preferences: preferences
+        )
+        try await waitUntil { state.currentUser == session.user }
+
+        await state.deleteAccount()
+        XCTAssertEqual(deleteCount, 0)
+        XCTAssertNil(deletionStore.record)
+        XCTAssertNil(state.currentUser)
+        XCTAssertTrue(state.isAccountDeletionIntentStorageUncertain)
+        XCTAssertTrue(state.needsAccountDeletionRetry)
+        XCTAssertNotNil(sessionStore.storedSession)
+        XCTAssertNotNil(keyManager.identity)
+
+        deletionStore.saveError = nil
+        await state.retryAuthenticationStorageLoad()
+        try await waitUntil { state.currentUser == session.user }
+        XCTAssertFalse(state.isAccountDeletionIntentStorageUncertain)
+        XCTAssertFalse(state.needsAccountDeletionRetry)
+        XCTAssertFalse(state.needsAuthenticationStorageReload)
+        state.resumePlaintextProductionAfterBecomingActive()
+        XCTAssertTrue(state.isPlaintextProductionEnabledForTesting)
+    }
+
+    @MainActor
+    func testUnexpectedAccountDeletionSuccessResponsesRetainRetryAuthority() async throws {
+        let responses: [(Int, Data)] = [
+            (200, Data()),
+            (202, Data()),
+            (204, Data("unexpected".utf8))
+        ]
+        for (status, body) in responses {
+            let suiteName = "KithraAccountDeletionTests.\(UUID().uuidString)"
+            let preferences = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+            defer { preferences.removePersistentDomain(forName: suiteName) }
+            preferences.set(true, forKey: LocalAccountBootstrapMarkers.installMarkerKey)
+            let session = makeSession(token: "unexpected-\(status)")
+            let keyManager = RegistrationRecoveryKeyManager(identity: boundIdentity(for: session))
+            let sessionStore = InMemoryAuthSessionStore(storedSession: StoredAuthSession(
+                relayBaseURLString: "https://relay.example.test",
+                session: session
+            ))
+            let deletionStore = InMemoryAccountDeletionIntentStore()
+            let mediaRoot = deletionMediaRoot()
+            defer { try? FileManager.default.removeItem(at: mediaRoot) }
+            AuthenticationURLProtocol.handler = { request in
+                switch request.url?.path {
+                case "/contacts", "/messages":
+                    return (200, Data("[]".utf8))
+                case "/account":
+                    return (status, body)
+                default:
+                    return (404, Data())
+                }
+            }
+            let state = makeDeletionState(
+                sessionStore: sessionStore,
+                deletionStore: deletionStore,
+                keyManager: keyManager,
+                mediaRoot: mediaRoot,
+                preferences: preferences
+            )
+            try await waitUntil { state.currentUser == session.user }
+
+            await state.deleteAccount()
+
+            XCTAssertEqual(deletionStore.record?.phase, .awaitingRelayDeletion)
+            XCTAssertTrue(state.needsAccountDeletionRetry)
+            XCTAssertNotNil(sessionStore.storedSession)
+            XCTAssertNotNil(keyManager.identity)
+            XCTAssertNil(state.currentUser)
+        }
+    }
+
+    @MainActor
+    func testOrdinaryAccountDeletionFailureRetainsAuthorityAndExplicitRetryCleans() async throws {
+        let suiteName = "KithraAccountDeletionTests.\(UUID().uuidString)"
+        let preferences = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { preferences.removePersistentDomain(forName: suiteName) }
+        preferences.set(true, forKey: LocalAccountBootstrapMarkers.installMarkerKey)
+        let session = makeSession(token: "retry-token")
+        let keyManager = RegistrationRecoveryKeyManager(identity: boundIdentity(for: session))
+        let sessionStore = InMemoryAuthSessionStore(storedSession: StoredAuthSession(
+            relayBaseURLString: "https://relay.example.test",
+            session: session
+        ))
+        let deletionStore = InMemoryAccountDeletionIntentStore()
+        let mediaRoot = deletionMediaRoot()
+        defer { try? FileManager.default.removeItem(at: mediaRoot) }
+        var shouldFail = true
+        var deleteCount = 0
+        AuthenticationURLProtocol.handler = { request in
+            switch request.url?.path {
+            case "/contacts", "/messages":
+                return (200, Data("[]".utf8))
+            case "/account":
+                deleteCount += 1
+                return shouldFail ? (500, Data("retry".utf8)) : (204, Data())
+            default:
+                return (404, Data())
+            }
+        }
+        let state = makeDeletionState(
+            sessionStore: sessionStore,
+            deletionStore: deletionStore,
+            keyManager: keyManager,
+            mediaRoot: mediaRoot,
+            preferences: preferences
+        )
+        try await waitUntil { state.currentUser == session.user }
+
+        await state.deleteAccount()
+        XCTAssertEqual(deleteCount, 1)
+        XCTAssertEqual(deletionStore.record?.phase, .awaitingRelayDeletion)
+        XCTAssertNotNil(keyManager.identity)
+
+        shouldFail = false
+        await state.retryPendingAccountDeletion()
+        XCTAssertEqual(deleteCount, 2)
+        XCTAssertNil(deletionStore.record)
+        XCTAssertNil(sessionStore.storedSession)
+        XCTAssertNil(keyManager.identity)
+    }
+
+    @MainActor
+    func testLostDeleteResponseRelaunchUsesIdentityAbsence401ThenCleans() async throws {
+        let suiteName = "KithraAccountDeletionTests.\(UUID().uuidString)"
+        let preferences = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { preferences.removePersistentDomain(forName: suiteName) }
+        preferences.set(true, forKey: LocalAccountBootstrapMarkers.installMarkerKey)
+        let session = makeSession(token: "lost-response-token")
+        let keyManager = RegistrationRecoveryKeyManager(identity: boundIdentity(for: session))
+        let sessionStore = InMemoryAuthSessionStore(storedSession: StoredAuthSession(
+            relayBaseURLString: "https://relay.example.test",
+            session: session
+        ))
+        let deletionStore = InMemoryAccountDeletionIntentStore()
+        let mediaRoot = deletionMediaRoot()
+        defer { try? FileManager.default.removeItem(at: mediaRoot) }
+        AuthenticationURLProtocol.handler = { request in
+            switch request.url?.path {
+            case "/contacts", "/messages":
+                return (200, Data("[]".utf8))
+            case "/account":
+                throw URLError(.networkConnectionLost)
+            default:
+                return (404, Data())
+            }
+        }
+        var firstLaunch: AppState? = makeDeletionState(
+            sessionStore: sessionStore,
+            deletionStore: deletionStore,
+            keyManager: keyManager,
+            mediaRoot: mediaRoot,
+            preferences: preferences
+        )
+        try await waitUntil { firstLaunch?.currentUser == session.user }
+        await firstLaunch?.deleteAccount()
+        XCTAssertEqual(deletionStore.record?.phase, .awaitingRelayDeletion)
+        XCTAssertNotNil(sessionStore.storedSession)
+        XCTAssertNotNil(keyManager.identity)
+        firstLaunch = nil
+
+        var replayPaths: [String] = []
+        AuthenticationURLProtocol.responseHeaders = { request, _, _ in
+            if request.url?.path == "/auth/challenge" {
+                return ["Content-Type": "text/plain; charset=utf-8"]
+            }
+            return ["Content-Type": "application/json"]
+        }
+        AuthenticationURLProtocol.handler = { request in
+            replayPaths.append(request.url?.path ?? "")
+            switch request.url?.path {
+            case "/account":
+                return (401, Data("gone".utf8))
+            case "/auth/challenge":
+                return (401, Data("invalid login identity\n".utf8))
+            default:
+                return (404, Data())
+            }
+        }
+        let relaunched = makeDeletionState(
+            sessionStore: sessionStore,
+            deletionStore: deletionStore,
+            keyManager: keyManager,
+            mediaRoot: mediaRoot,
+            preferences: preferences
+        )
+        try await waitUntil {
+            deletionStore.record == nil && !relaunched.isRestoringSession
+        }
+
+        XCTAssertEqual(replayPaths, ["/account", "/auth/challenge"])
+        XCTAssertNil(sessionStore.storedSession)
+        XCTAssertNil(keyManager.identity)
+        XCTAssertFalse(relaunched.needsAccountDeletionRetry)
+    }
+
+    @MainActor
+    func testUnrelatedChallenge401NeverConfirmsAccountDeletion() async throws {
+        let suiteName = "KithraAccountDeletionTests.\(UUID().uuidString)"
+        let preferences = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { preferences.removePersistentDomain(forName: suiteName) }
+        preferences.set(true, forKey: LocalAccountBootstrapMarkers.installMarkerKey)
+        let session = makeSession(token: "proxy-401-token")
+        let stored = StoredAuthSession(
+            relayBaseURLString: "https://relay.example.test",
+            session: session
+        )
+        let identity = boundIdentity(for: session)
+        let keyManager = RegistrationRecoveryKeyManager(identity: identity)
+        let sessionStore = InMemoryAuthSessionStore(storedSession: stored)
+        let deletionStore = InMemoryAccountDeletionIntentStore(record:
+            PendingAccountDeletionRecord(protectedSession: stored, identity: identity)
+        )
+        let mediaRoot = deletionMediaRoot()
+        defer { try? FileManager.default.removeItem(at: mediaRoot) }
+        AuthenticationURLProtocol.responseHeaders = { request, _, _ in
+            if request.url?.path == "/auth/challenge" {
+                return ["Content-Type": "text/plain; charset=utf-8"]
+            }
+            return ["Content-Type": "application/json"]
+        }
+        var paths: [String] = []
+        AuthenticationURLProtocol.handler = { request in
+            paths.append(request.url?.path ?? "")
+            switch request.url?.path {
+            case "/account":
+                return (401, Data("invalid bearer token\n".utf8))
+            case "/auth/challenge":
+                return (401, Data("upstream access denied\n".utf8))
+            default:
+                return (404, Data())
+            }
+        }
+
+        let state = makeDeletionState(
+            sessionStore: sessionStore,
+            deletionStore: deletionStore,
+            keyManager: keyManager,
+            mediaRoot: mediaRoot,
+            preferences: preferences
+        )
+        try await waitUntil { state.needsAccountDeletionRetry && !state.isRestoringSession }
+
+        XCTAssertEqual(paths, ["/account", "/auth/challenge"])
+        XCTAssertEqual(deletionStore.record?.phase, .awaitingRelayDeletion)
+        XCTAssertNotNil(sessionStore.storedSession)
+        XCTAssertNotNil(keyManager.identity)
+        XCTAssertFalse(state.needsLocalCleanupRetry)
+    }
+
+    @MainActor
+    func testExactAbsenceBodyWithWrongContentTypeNeverConfirmsAccountDeletion() async throws {
+        let suiteName = "KithraAccountDeletionTests.\(UUID().uuidString)"
+        let preferences = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { preferences.removePersistentDomain(forName: suiteName) }
+        preferences.set(true, forKey: LocalAccountBootstrapMarkers.installMarkerKey)
+        let session = makeSession(token: "wrong-content-type-token")
+        let stored = StoredAuthSession(
+            relayBaseURLString: "https://relay.example.test",
+            session: session
+        )
+        let identity = boundIdentity(for: session)
+        let keyManager = RegistrationRecoveryKeyManager(identity: identity)
+        let sessionStore = InMemoryAuthSessionStore(storedSession: stored)
+        let deletionStore = InMemoryAccountDeletionIntentStore(record:
+            PendingAccountDeletionRecord(protectedSession: stored, identity: identity)
+        )
+        let mediaRoot = deletionMediaRoot()
+        defer { try? FileManager.default.removeItem(at: mediaRoot) }
+        AuthenticationURLProtocol.responseHeaders = { request, _, _ in
+            if request.url?.path == "/auth/challenge" {
+                return ["Content-Type": "application/json"]
+            }
+            return ["Content-Type": "text/plain; charset=utf-8"]
+        }
+        var paths: [String] = []
+        AuthenticationURLProtocol.handler = { request in
+            paths.append(request.url?.path ?? "")
+            switch request.url?.path {
+            case "/account":
+                return (401, Data("invalid bearer token\n".utf8))
+            case "/auth/challenge":
+                return (401, Data("invalid login identity\n".utf8))
+            default:
+                return (404, Data())
+            }
+        }
+
+        let state = makeDeletionState(
+            sessionStore: sessionStore,
+            deletionStore: deletionStore,
+            keyManager: keyManager,
+            mediaRoot: mediaRoot,
+            preferences: preferences
+        )
+        try await waitUntil { state.needsAccountDeletionRetry && !state.isRestoringSession }
+
+        XCTAssertEqual(paths, ["/account", "/auth/challenge"])
+        XCTAssertEqual(deletionStore.record?.phase, .awaitingRelayDeletion)
+        XCTAssertNotNil(sessionStore.storedSession)
+        XCTAssertNotNil(keyManager.identity)
+        XCTAssertFalse(state.needsLocalCleanupRetry)
+    }
+
+    @MainActor
+    func testPendingDeletionWithExpiredBearerRenewsThenRetriesExactDelete() async throws {
+        let suiteName = "KithraAccountDeletionTests.\(UUID().uuidString)"
+        let preferences = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { preferences.removePersistentDomain(forName: suiteName) }
+        preferences.set(true, forKey: LocalAccountBootstrapMarkers.installMarkerKey)
+        let deviceID = UUID()
+        let expired = makeSession(
+            deviceID: deviceID,
+            token: "expired-delete-token",
+            expiresAt: Date().addingTimeInterval(-60)
+        )
+        let renewed = makeSession(deviceID: deviceID, token: "renewed-delete-token")
+        let stored = StoredAuthSession(
+            relayBaseURLString: "https://relay.example.test",
+            session: expired
+        )
+        let identity = boundIdentity(for: expired)
+        let keyManager = RegistrationRecoveryKeyManager(identity: identity)
+        let sessionStore = InMemoryAuthSessionStore(storedSession: stored)
+        let deletionStore = InMemoryAccountDeletionIntentStore(record:
+            PendingAccountDeletionRecord(protectedSession: stored, identity: identity)
+        )
+        let mediaRoot = deletionMediaRoot()
+        defer { try? FileManager.default.removeItem(at: mediaRoot) }
+        let encoder = wireEncoder()
+        let challenge = LoginChallenge(
+            challengeID: UUID(),
+            challenge: Data(repeating: 0x51, count: 32),
+            expiresAt: Date().addingTimeInterval(60)
+        )
+        var paths: [String] = []
+        AuthenticationURLProtocol.handler = { request in
+            paths.append(request.url?.path ?? "")
+            switch request.url?.path {
+            case "/account":
+                if request.value(forHTTPHeaderField: "Authorization") == "Bearer renewed-delete-token" {
+                    return (204, Data())
+                }
+                return (401, Data("expired".utf8))
+            case "/auth/challenge":
+                return (201, try encoder.encode(challenge))
+            case "/auth/login":
+                return (200, try encoder.encode(renewed))
+            default:
+                return (404, Data())
+            }
+        }
+
+        let state = makeDeletionState(
+            sessionStore: sessionStore,
+            deletionStore: deletionStore,
+            keyManager: keyManager,
+            mediaRoot: mediaRoot,
+            preferences: preferences
+        )
+        try await waitUntil { deletionStore.record == nil && !state.isRestoringSession }
+
+        XCTAssertEqual(paths, ["/account", "/auth/challenge", "/auth/login", "/account"])
+        XCTAssertNil(sessionStore.storedSession)
+        XCTAssertNil(keyManager.identity)
+    }
+
+    @MainActor
+    func testConfirmedDeletionAndCleanupMarkerResumeLocallyWithoutHTTP() async throws {
+        let suiteName = "KithraAccountDeletionTests.\(UUID().uuidString)"
+        let preferences = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { preferences.removePersistentDomain(forName: suiteName) }
+        preferences.set(true, forKey: LocalAccountBootstrapMarkers.cleanupInProgressKey)
+        let session = makeSession(token: "confirmed-token")
+        let stored = StoredAuthSession(
+            relayBaseURLString: "https://relay.example.test",
+            session: session
+        )
+        let identity = boundIdentity(for: session)
+        let keyManager = RegistrationRecoveryKeyManager(identity: identity)
+        let sessionStore = InMemoryAuthSessionStore(storedSession: stored)
+        let deletionStore = InMemoryAccountDeletionIntentStore(record:
+            PendingAccountDeletionRecord(
+                protectedSession: stored,
+                identity: identity,
+                phase: .relayDeletionConfirmed
+            )
+        )
+        let mediaRoot = deletionMediaRoot()
+        defer { try? FileManager.default.removeItem(at: mediaRoot) }
+        var requestCount = 0
+        AuthenticationURLProtocol.handler = { _ in
+            requestCount += 1
+            return (500, Data())
+        }
+
+        let state = makeDeletionState(
+            sessionStore: sessionStore,
+            deletionStore: deletionStore,
+            keyManager: keyManager,
+            mediaRoot: mediaRoot,
+            preferences: preferences
+        )
+        try await waitUntil { deletionStore.record == nil && !state.isRestoringSession }
+
+        XCTAssertEqual(requestCount, 0)
+        XCTAssertNil(sessionStore.storedSession)
+        XCTAssertNil(keyManager.identity)
+        XCTAssertNil(LocalAccountBootstrapMarkers(preferences: preferences).cleanupStatus)
+    }
+
+    @MainActor
+    func testUnreadableDeletionIntentBlocksResetThenUnlockReloadResumesCleanup() async throws {
+        for loadError in [
+            AuthSessionStoreError.keychain(errSecInteractionNotAllowed),
+            AuthSessionStoreError.corruptAccountDeletionIntent
+        ] {
+            let suiteName = "KithraAccountDeletionTests.\(UUID().uuidString)"
+            let preferences = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+            defer { preferences.removePersistentDomain(forName: suiteName) }
+            preferences.set(true, forKey: LocalAccountBootstrapMarkers.cleanupInProgressKey)
+            let session = makeSession(token: "locked-token")
+            let stored = StoredAuthSession(
+                relayBaseURLString: "https://relay.example.test",
+                session: session
+            )
+            let identity = boundIdentity(for: session)
+            let keyManager = RegistrationRecoveryKeyManager(identity: identity)
+            let sessionStore = InMemoryAuthSessionStore(storedSession: stored)
+            let deletionStore = InMemoryAccountDeletionIntentStore(
+                record: PendingAccountDeletionRecord(
+                    protectedSession: stored,
+                    identity: identity,
+                    phase: .relayDeletionConfirmed
+                ),
+                loadError: loadError
+            )
+            let mediaRoot = deletionMediaRoot()
+            defer { try? FileManager.default.removeItem(at: mediaRoot) }
+            AuthenticationURLProtocol.handler = { _ in
+                XCTFail("Confirmed local cleanup must not contact the relay")
+                return (500, Data())
+            }
+            let state = makeDeletionState(
+                sessionStore: sessionStore,
+                deletionStore: deletionStore,
+                keyManager: keyManager,
+                mediaRoot: mediaRoot,
+                preferences: preferences
+            )
+
+            XCTAssertTrue(state.isAccountDeletionIntentStorageUncertain)
+            XCTAssertTrue(state.needsLocalCleanupRetry)
+            await state.resetLocalRegistration(confirmation: .eraseProtectedLocalAccount)
+            XCTAssertNotNil(sessionStore.storedSession)
+            XCTAssertNotNil(keyManager.identity)
+            XCTAssertEqual(sessionStore.removeCallCount, 0)
+            XCTAssertEqual(keyManager.removeCallCount, 0)
+
+            deletionStore.loadError = nil
+            await state.retryAccountDeletionIntentStorageLoad()
+            try await waitUntil { deletionStore.record == nil && !state.isRestoringSession }
+            XCTAssertNil(sessionStore.storedSession)
+            XCTAssertNil(keyManager.identity)
+            XCTAssertFalse(state.isAccountDeletionIntentStorageUncertain)
+        }
+    }
+
+    @MainActor
+    func testReadableDeletionIntentSurvivesSessionLoadFailureAndRetryReloadsBeforeDelete() async throws {
+        let suiteName = "KithraAccountDeletionTests.\(UUID().uuidString)"
+        let preferences = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { preferences.removePersistentDomain(forName: suiteName) }
+        preferences.set(true, forKey: LocalAccountBootstrapMarkers.installMarkerKey)
+        let session = makeSession(token: "session-locked-token")
+        let stored = StoredAuthSession(
+            relayBaseURLString: "https://relay.example.test",
+            session: session
+        )
+        let identity = boundIdentity(for: session)
+        let keyManager = RegistrationRecoveryKeyManager(identity: identity)
+        let sessionStore = InMemoryAuthSessionStore(
+            storedSession: stored,
+            loadError: AuthSessionStoreError.keychain(errSecInteractionNotAllowed)
+        )
+        let deletionStore = InMemoryAccountDeletionIntentStore(record:
+            PendingAccountDeletionRecord(protectedSession: stored, identity: identity)
+        )
+        let mediaRoot = deletionMediaRoot()
+        defer { try? FileManager.default.removeItem(at: mediaRoot) }
+        var deleteCount = 0
+        AuthenticationURLProtocol.handler = { request in
+            if request.url?.path == "/account" {
+                deleteCount += 1
+                return (204, Data())
+            }
+            return (404, Data())
+        }
+        let state = makeDeletionState(
+            sessionStore: sessionStore,
+            deletionStore: deletionStore,
+            keyManager: keyManager,
+            mediaRoot: mediaRoot,
+            preferences: preferences
+        )
+
+        XCTAssertTrue(state.needsAccountDeletionRetry)
+        XCTAssertTrue(state.needsAuthenticationStorageReload)
+        XCTAssertEqual(deletionStore.record?.phase, .awaitingRelayDeletion)
+        await state.resetLocalRegistration(confirmation: .eraseProtectedLocalAccount)
+        XCTAssertEqual(deleteCount, 0)
+        XCTAssertEqual(sessionStore.removeCallCount, 0)
+        XCTAssertEqual(keyManager.removeCallCount, 0)
+
+        sessionStore.loadError = nil
+        await state.retryPendingAccountDeletion()
+        try await waitUntil { deletionStore.record == nil && !state.isRestoringSession }
+        XCTAssertEqual(deleteCount, 1)
+        XCTAssertNil(sessionStore.storedSession)
+        XCTAssertNil(keyManager.identity)
+    }
+
+    @MainActor
+    func testDeletionSuspendsInFlightPlaintextAndCleansExactFilesBeforeHTTP() async throws {
+        let suiteName = "KithraAccountDeletionTests.\(UUID().uuidString)"
+        let preferences = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { preferences.removePersistentDomain(forName: suiteName) }
+        preferences.set(true, forKey: LocalAccountBootstrapMarkers.installMarkerKey)
+        let session = makeSession(token: "plaintext-token")
+        let keyManager = RegistrationRecoveryKeyManager(identity: boundIdentity(for: session))
+        let sessionStore = InMemoryAuthSessionStore(storedSession: StoredAuthSession(
+            relayBaseURLString: "https://relay.example.test",
+            session: session
+        ))
+        let deletionStore = InMemoryAccountDeletionIntentStore()
+        let mediaRoot = deletionMediaRoot()
+        defer { try? FileManager.default.removeItem(at: mediaRoot) }
+        let tempRoot = mediaRoot.appendingPathComponent("tmp", isDirectory: true)
+        try FileManager.default.createDirectory(at: tempRoot, withIntermediateDirectories: true)
+        let activeURL = tempRoot
+            .appendingPathComponent("playback-\(UUID().uuidString)")
+            .appendingPathExtension("mp4")
+        let inFlightURL = tempRoot
+            .appendingPathComponent("playback-\(UUID().uuidString)")
+            .appendingPathExtension("mp4")
+        try Data("plaintext".utf8).write(to: activeURL)
+        try Data("plaintext".utf8).write(to: inFlightURL)
+        let cancellation = DeletionCancellationBox()
+
+        AuthenticationURLProtocol.handler = { request in
+            switch request.url?.path {
+            case "/contacts", "/messages":
+                return (200, Data("[]".utf8))
+            case "/account":
+                XCTAssertFalse(FileManager.default.fileExists(atPath: activeURL.path))
+                XCTAssertFalse(FileManager.default.fileExists(atPath: inFlightURL.path))
+                return (500, Data("retry".utf8))
+            default:
+                return (404, Data())
+            }
+        }
+        let state = makeDeletionState(
+            sessionStore: sessionStore,
+            deletionStore: deletionStore,
+            keyManager: keyManager,
+            mediaRoot: mediaRoot,
+            preferences: preferences
+        )
+        try await waitUntil { state.currentUser == session.user }
+        state.activePlaybackFile = PlaybackTempFile(
+            id: UUID(),
+            url: activeURL,
+            createdAt: Date(),
+            cleanupDeadline: Date().addingTimeInterval(60)
+        )
+        let permit = PlaybackPreparationPermit()
+        let operationID = try permit.beginOperation(outputURLs: [inFlightURL]) {
+            cancellation.cancel()
+        }
+        XCTAssertTrue(permit.startOperation(operationID) {})
+        state.installPlaybackPreparationPermitForTesting(permit)
+        state.resumePlaintextProductionAfterBecomingActive()
+
+        await state.deleteAccount()
+
+        XCTAssertTrue(cancellation.wasCancelled)
+        XCTAssertFalse(permit.isValid)
+        XCTAssertNil(state.activePlaybackFile)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: activeURL.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: inFlightURL.path))
+        state.resumePlaintextProductionAfterBecomingActive()
+        XCTAssertFalse(state.isPlaintextProductionEnabledForTesting)
+        XCTAssertEqual(deletionStore.record?.phase, .awaitingRelayDeletion)
+        XCTAssertNotNil(keyManager.identity)
+    }
+
+    @MainActor
+    func testActiveRecognizedPlaintextBlocksDeleteUntilReleasedAndCleaned() async throws {
+        let suiteName = "KithraAccountDeletionTests.\(UUID().uuidString)"
+        let preferences = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { preferences.removePersistentDomain(forName: suiteName) }
+        preferences.set(true, forKey: LocalAccountBootstrapMarkers.installMarkerKey)
+        let session = makeSession(token: "active-janitor-token")
+        let keyManager = RegistrationRecoveryKeyManager(identity: boundIdentity(for: session))
+        let sessionStore = InMemoryAuthSessionStore(storedSession: StoredAuthSession(
+            relayBaseURLString: "https://relay.example.test",
+            session: session
+        ))
+        let deletionStore = InMemoryAccountDeletionIntentStore()
+        let mediaRoot = deletionMediaRoot()
+        defer { try? FileManager.default.removeItem(at: mediaRoot) }
+        let tempRoot = mediaRoot.appendingPathComponent("tmp", isDirectory: true)
+        try FileManager.default.createDirectory(at: tempRoot, withIntermediateDirectories: true)
+        let activeURL = tempRoot
+            .appendingPathComponent("delivery-\(UUID().uuidString)")
+            .appendingPathExtension("mp4")
+        let janitor = KithraPlaintextTempFileJanitor()
+        try janitor.beginProducing([activeURL])
+        // Account-deletion's early unlink may release retained ownership, but
+        // it must not erase the in-flight producer reservation.
+        janitor.release(activeURL)
+        defer {
+            janitor.release(activeURL)
+            try? FileManager.default.removeItem(at: activeURL)
+        }
+        var deleteCount = 0
+        AuthenticationURLProtocol.handler = { request in
+            switch request.url?.path {
+            case "/contacts", "/messages":
+                return (200, Data("[]".utf8))
+            case "/account":
+                deleteCount += 1
+                return (204, Data())
+            default:
+                return (404, Data())
+            }
+        }
+        let state = makeDeletionState(
+            sessionStore: sessionStore,
+            deletionStore: deletionStore,
+            keyManager: keyManager,
+            mediaRoot: mediaRoot,
+            plaintextTempJanitor: janitor,
+            preferences: preferences
+        )
+        try await waitUntil { state.currentUser == session.user && !state.isRestoringSession }
+
+        await state.deleteAccount()
+
+        XCTAssertEqual(deleteCount, 0)
+        XCTAssertEqual(deletionStore.record?.phase, .awaitingRelayDeletion)
+        XCTAssertFalse(
+            FileManager.default.fileExists(atPath: activeURL.path),
+            "An AV destination reservation must block deletion before the file exists"
+        )
+        XCTAssertNotNil(sessionStore.storedSession)
+        XCTAssertNotNil(keyManager.identity)
+
+        // Simulate AVFoundation recreating the destination after the early
+        // unlink and first directory sweep, while its producer is still live.
+        try Data("late active plaintext".utf8).write(to: activeURL)
+        try FileManager.default.removeItem(at: activeURL)
+        janitor.finishProducing([activeURL])
+        await state.retryPendingAccountDeletion()
+
+        XCTAssertEqual(deleteCount, 1)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: activeURL.path))
+        XCTAssertNil(deletionStore.record)
+        XCTAssertNil(sessionStore.storedSession)
+        XCTAssertNil(keyManager.identity)
     }
 
     func testSwiftSodiumLoginSignatureMatchesSharedGoVector() throws {
@@ -1960,6 +3058,52 @@ final class AuthenticationTests: XCTestCase {
         )
     }
 
+    private func boundIdentity(for session: AuthSession) -> DevicePublicIdentity {
+        DevicePublicIdentity(
+            deviceID: session.device.id,
+            encryptionPublicKey: session.device.encryptionPublicKey,
+            signingPublicKey: session.device.signingPublicKey,
+            createdAt: session.device.createdAt
+        )
+    }
+
+    private func deletionMediaRoot() -> URL {
+        FileManager.default.temporaryDirectory
+            .appendingPathComponent(
+                "KithraAccountDeletionTests-\(UUID().uuidString)",
+                isDirectory: true
+            )
+    }
+
+    @MainActor
+    private func makeDeletionState(
+        sessionStore: InMemoryAuthSessionStore,
+        deletionStore: InMemoryAccountDeletionIntentStore,
+        keyManager: RegistrationRecoveryKeyManager,
+        mediaRoot: URL,
+        plaintextTempJanitor: KithraPlaintextTempFileJanitor = KithraPlaintextTempFileJanitor(),
+        preferences: UserDefaults
+    ) -> AppState {
+        AppState(
+            relayBaseURL: URL(string: "https://relay.example.test")!,
+            apiClient: makeAPIClient(token: nil),
+            keyManager: keyManager,
+            mediaPipeline: DefaultMediaPipeline(
+                keyManager: keyManager,
+                tempRoot: mediaRoot.appendingPathComponent("tmp", isDirectory: true),
+                localMediaRoot: mediaRoot.appendingPathComponent("local", isDirectory: true),
+                plaintextTempJanitor: plaintextTempJanitor
+            ),
+            contactTrustStore: EmptyContactTrustStore(),
+            messageReplayStore: EmptyMessageReplayStore(),
+            sessionStore: sessionStore,
+            pendingRegistrationStore: InMemoryPendingRegistrationStore(),
+            accountDeletionIntentStore: deletionStore,
+            preferences: preferences,
+            seedPreviewData: false
+        )
+    }
+
     private func makeSession(
         deviceID: UUID = UUID(),
         token: String,
@@ -2003,6 +3147,7 @@ private struct LegacyPendingRegistrationRecord: Encodable {
 
 private final class AuthenticationURLProtocol: URLProtocol {
     static var handler: ((URLRequest) throws -> (status: Int, data: Data))?
+    static var responseHeaders: ((URLRequest, Int, Data) -> [String: String])?
 
     override class func canInit(with request: URLRequest) -> Bool {
         true
@@ -2023,7 +3168,11 @@ private final class AuthenticationURLProtocol: URLProtocol {
                 url: url,
                 statusCode: result.status,
                 httpVersion: "HTTP/1.1",
-                headerFields: ["Content-Type": "application/json"]
+                headerFields: Self.responseHeaders?(
+                    request,
+                    result.status,
+                    result.data
+                ) ?? ["Content-Type": "application/json"]
             ) else {
                 throw APIClientError.invalidResponse
             }
@@ -2099,6 +3248,23 @@ private final class RegistrationRequestGate: @unchecked Sendable {
 
     func open() {
         semaphore.signal()
+    }
+}
+
+private final class DeletionCancellationBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var cancelled = false
+
+    var wasCancelled: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return cancelled
+    }
+
+    func cancel() {
+        lock.lock()
+        cancelled = true
+        lock.unlock()
     }
 }
 
@@ -2191,6 +3357,7 @@ private final class InMemoryAuthSessionStore: AuthSessionStoring {
     private(set) var removeCallCount = 0
     var loadError: Error?
     var saveError: Error?
+    var removeError: Error?
     private let postSaveReadback: StoredAuthSession?
     private var hasSaved = false
 
@@ -2198,11 +3365,13 @@ private final class InMemoryAuthSessionStore: AuthSessionStoring {
         storedSession: StoredAuthSession? = nil,
         loadError: Error? = nil,
         saveError: Error? = nil,
+        removeError: Error? = nil,
         postSaveReadback: StoredAuthSession? = nil
     ) {
         self.storedSession = storedSession
         self.loadError = loadError
         self.saveError = saveError
+        self.removeError = removeError
         self.postSaveReadback = postSaveReadback
     }
 
@@ -2229,6 +3398,9 @@ private final class InMemoryAuthSessionStore: AuthSessionStoring {
 
     func remove() throws {
         removeCallCount += 1
+        if let removeError {
+            throw removeError
+        }
         storedSession = nil
         hasSaved = false
     }
@@ -2273,6 +3445,63 @@ private final class InMemoryPendingRegistrationStore: PendingRegistrationStoring
 
     func remove() throws {
         removeCallCount += 1
+        record = nil
+        hasSaved = false
+    }
+}
+
+private final class InMemoryAccountDeletionIntentStore: AccountDeletionIntentStoring {
+    private(set) var record: PendingAccountDeletionRecord?
+    private(set) var loadCallCount = 0
+    private(set) var saveCallCount = 0
+    private(set) var removeCallCount = 0
+    private(set) var didVerifySavedValue = false
+    var loadError: Error?
+    var saveError: Error?
+    var removeError: Error?
+    var postSaveReadback: PendingAccountDeletionRecord?
+    private var hasSaved = false
+
+    init(
+        record: PendingAccountDeletionRecord? = nil,
+        loadError: Error? = nil,
+        saveError: Error? = nil,
+        removeError: Error? = nil,
+        postSaveReadback: PendingAccountDeletionRecord? = nil
+    ) {
+        self.record = record
+        self.loadError = loadError
+        self.saveError = saveError
+        self.removeError = removeError
+        self.postSaveReadback = postSaveReadback
+    }
+
+    func load() throws -> PendingAccountDeletionRecord? {
+        loadCallCount += 1
+        if let loadError {
+            throw loadError
+        }
+        let value = hasSaved ? (postSaveReadback ?? record) : record
+        if hasSaved {
+            didVerifySavedValue = value == record
+        }
+        return value
+    }
+
+    func save(_ record: PendingAccountDeletionRecord) throws {
+        saveCallCount += 1
+        if let saveError {
+            throw saveError
+        }
+        self.record = record
+        hasSaved = true
+    }
+
+    func remove() throws {
+        removeCallCount += 1
+        if let removeError {
+            throw removeError
+        }
         record = nil
         hasSaved = false
     }

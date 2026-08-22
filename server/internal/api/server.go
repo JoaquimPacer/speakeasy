@@ -31,8 +31,10 @@ type Server struct {
 	now           func() time.Time
 
 	blobMutationMu sync.Mutex
-	abuseWriteMu   sync.Mutex
-	registrationMu sync.Mutex
+	// beforeUploadMutationLock is a deterministic test hook; production leaves it nil.
+	beforeUploadMutationLock func()
+	abuseWriteMu             sync.Mutex
+	registrationMu           sync.Mutex
 
 	registrationIPLimiter     *fixedWindowLimiter
 	registrationGlobalLimiter *fixedWindowLimiter
@@ -501,10 +503,17 @@ func (s *Server) handleAccount(w http.ResponseWriter, r *http.Request) {
 
 	rows, err := s.db.QueryContext(
 		r.Context(),
-		`SELECT encrypted_blob_path
+		`SELECT encrypted_blob_path AS blob_path
 		   FROM messages
 		  WHERE (sender_user_id = ? OR recipient_user_id = ?)
-		    AND encrypted_blob_path <> ''`,
+		    AND encrypted_blob_path <> ''
+		  UNION
+		 SELECT blob_path
+		   FROM pending_blob_writes
+		  WHERE sender_user_id = ? OR recipient_user_id = ?
+		  ORDER BY blob_path`,
+		principal.userID,
+		principal.userID,
 		principal.userID,
 		principal.userID,
 	)
@@ -539,7 +548,27 @@ func (s *Server) handleAccount(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if _, err := s.db.ExecContext(r.Context(), `DELETE FROM users WHERE id = ?`, principal.userID); err != nil {
+	tx, err := s.db.BeginTx(r.Context(), nil)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer tx.Rollback()
+
+	if _, err := tx.ExecContext(
+		r.Context(),
+		`DELETE FROM pending_blob_writes WHERE sender_user_id = ? OR recipient_user_id = ?`,
+		principal.userID,
+		principal.userID,
+	); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if _, err := tx.ExecContext(r.Context(), `DELETE FROM users WHERE id = ?`, principal.userID); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if err := tx.Commit(); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -973,22 +1002,6 @@ func (s *Server) uploadMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if isContact, err := s.hasContact(r.Context(), principal.userID, metadata.RecipientID); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	} else if !isContact {
-		http.Error(w, "recipient is not a contact", http.StatusForbidden)
-		return
-	}
-
-	if belongs, err := s.deviceBelongsToUser(r.Context(), metadata.RecipientDeviceID, metadata.RecipientID); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	} else if !belongs {
-		http.Error(w, "recipientDeviceID does not belong to recipientID", http.StatusBadRequest)
-		return
-	}
-
 	file, fileHeader, err := r.FormFile("blob")
 	if err != nil {
 		http.Error(w, "blob part is required", http.StatusBadRequest)
@@ -1008,6 +1021,37 @@ func (s *Server) uploadMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if s.beforeUploadMutationLock != nil {
+		s.beforeUploadMutationLock()
+	}
+	s.blobMutationMu.Lock()
+	defer s.blobMutationMu.Unlock()
+
+	currentPrincipal, ok := s.authenticate(w, r)
+	if !ok {
+		return
+	}
+	if currentPrincipal != principal {
+		http.Error(w, "invalid bearer token", http.StatusUnauthorized)
+		return
+	}
+
+	if isContact, err := s.hasContact(r.Context(), principal.userID, metadata.RecipientID); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	} else if !isContact {
+		http.Error(w, "recipient is not a contact", http.StatusForbidden)
+		return
+	}
+
+	if belongs, err := s.deviceBelongsToUser(r.Context(), metadata.RecipientDeviceID, metadata.RecipientID); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	} else if !belongs {
+		http.Error(w, "recipientDeviceID does not belong to recipientID", http.StatusBadRequest)
+		return
+	}
+
 	if blocked, err := s.isBlocked(r.Context(), principal.userID, metadata.RecipientID); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -1016,8 +1060,6 @@ func (s *Server) uploadMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.blobMutationMu.Lock()
-	defer s.blobMutationMu.Unlock()
 	if err := s.checkPendingQuota(r.Context(), principal.userID, metadata.RecipientID, fileHeader.Size); err != nil {
 		var quotaErr *pendingQuotaError
 		if errors.As(err, &quotaErr) {

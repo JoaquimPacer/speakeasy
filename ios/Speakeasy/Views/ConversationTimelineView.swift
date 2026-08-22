@@ -883,9 +883,15 @@ private final class InlineVideoRecorder: NSObject, ObservableObject, AVCaptureFi
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("kithra-inline-\(UUID().uuidString)")
             .appendingPathExtension("mov")
-        plaintextTempJanitor.preserveWhileInUse(url)
+        do {
+            try plaintextTempJanitor.beginProducing([url])
+        } catch {
+            resetRecordingState(completing: generation)
+            return
+        }
         guard recordingLifecycle.registerOutput(url, generation: generation) else {
             Self.cleanupRecordingFiles([url])
+            plaintextTempJanitor.finishProducing([url])
             resetRecordingState(completing: generation)
             return
         }
@@ -893,12 +899,14 @@ private final class InlineVideoRecorder: NSObject, ObservableObject, AVCaptureFi
         sessionQueue.async { [weak self] in
             guard let self else {
                 Self.cleanupRecordingFiles([url])
+                KithraPlaintextTempFileJanitor.shared.finishProducing([url])
                 return
             }
             guard !self.recordingLifecycle.isDiscarded(generation),
                   !self.movieOutput.isRecording else {
                 _ = self.recordingLifecycle.takeGeneration(for: url)
                 Self.cleanupRecordingFiles([url])
+                self.plaintextTempJanitor.finishProducing([url])
                 if self.recordingLifecycle.isDiscarded(generation) {
                     self.updateOnMain {
                         self.resetRecordingState(completing: generation)
@@ -1169,7 +1177,10 @@ private final class InlineVideoRecorder: NSObject, ObservableObject, AVCaptureFi
         let outputURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("kithra-inline-merged-\(UUID().uuidString)")
             .appendingPathExtension("mov")
-        KithraPlaintextTempFileJanitor.shared.preserveWhileInUse(outputURL)
+        try KithraPlaintextTempFileJanitor.shared.beginProducing([outputURL])
+        defer {
+            KithraPlaintextTempFileJanitor.shared.finishProducing([outputURL])
+        }
 
         do {
             let sourceSegments = try segments.map { segmentURL in
@@ -1430,6 +1441,7 @@ private final class InlineVideoRecorder: NSObject, ObservableObject, AVCaptureFi
         from connections: [AVCaptureConnection],
         error: Error?
     ) {
+        defer { plaintextTempJanitor.finishProducing([outputFileURL]) }
         let generation = recordingLifecycle.takeGeneration(for: outputFileURL)
         let shouldDiscard = generation.map(recordingLifecycle.isDiscarded) ?? true
         let shouldResumeAfterFlip = isSwitchingCameraDuringRecording && !shouldDiscard

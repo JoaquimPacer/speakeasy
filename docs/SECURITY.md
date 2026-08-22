@@ -9,26 +9,27 @@ Speakeasy uses end-to-end encryption for all video messages. The server acts as 
 All client-side content and identity cryptography uses
 [libsodium](https://doc.libsodium.org/), a widely audited, misuse-resistant
 library. The content-blind Go relay performs no message-content encryption or
-decryption. The current public-release candidate proposes using Go's standard
+decryption. C-CRYPTO-01 authorizes using Go's standard
 `crypto/ed25519`, `crypto/rand`, and `crypto/sha256` implementations only for
 login-proof verification, relay-generated high-entropy identifiers/tokens and
 challenges, and hashing those high-entropy bearer tokens at rest. The Ed25519
 verification is wire-compatible with signatures produced by libsodium, and the
-three relay-only uses preserve the static CGO-free build. This narrow
-C-CRYPTO-01 exception to the repository's literal libsodium-only rule still
-requires Joaquim's approval before release.
+three relay-only uses preserve the static CGO-free build. Joaquim approved this
+narrow relay-authentication and session-recovery exception on 2026-08-22. It
+does not authorize relay message-content cryptography or any broader departure
+from libsodium-backed client cryptography.
 
 | Purpose | Algorithm | Implementation |
 |---------|-----------|----------------|
 | Key exchange / key wrapping | X25519 | libsodium box/key-exchange APIs |
 | Device signing | Ed25519 signatures | libsodium `crypto_sign_*` |
-| Relay login-proof verification | Ed25519 verification | Go `crypto/ed25519` (pending C-CRYPTO-01) |
+| Relay login-proof verification | Ed25519 verification | Go `crypto/ed25519` (C-CRYPTO-01) |
 | Content encryption | XChaCha20-Poly1305 | libsodium AEAD APIs |
 | Asymmetric key wrapping | X25519 + AEAD | libsodium `crypto_box_seal` |
 | Key derivation / hashing | BLAKE2b | libsodium `crypto_generichash` |
 | Client random bytes | OS CSPRNG | libsodium `randombytes_buf` |
-| Relay challenges, identifiers, and bearer tokens | OS CSPRNG | Go `crypto/rand` (pending C-CRYPTO-01) |
-| Bearer-token hashing at rest | SHA-256 | Go `crypto/sha256` (pending C-CRYPTO-01) |
+| Relay challenges, identifiers, and bearer tokens | OS CSPRNG | Go `crypto/rand` (C-CRYPTO-01) |
+| Bearer-token hashing at rest | SHA-256 | Go `crypto/sha256` (C-CRYPTO-01) |
 
 ## Key Management
 
@@ -55,9 +56,37 @@ Each device generates long-term encryption and signing keypairs on first launch:
   device ID, encryption key, and signing key still match the protected local
   identity.
 - Logout revokes every session and outstanding login challenge for the
-  authenticated device. Reset and account deletion attempt remote revocation,
-  then surface any incomplete local Keychain/media cleanup instead of silently
-  reporting success.
+  authenticated device. Account deletion first writes and reads back a
+  device-bound deletion intent in the Keychain. While that intent is pending,
+  the client hides authenticated UI, invalidates and removes plaintext media,
+  and retains the exact bearer, signing identity, and encrypted local media
+  needed to reconcile an interrupted request.
+- Before that protected intent is persisted, the client closes a process-wide
+  plaintext-production barrier shared by capture and media processing. New
+  output reservations fail closed, while every already-started producer keeps
+  its exact destination registered through its definitive completion or
+  cancellation callback. Both the pre-request and final local sweeps fail and
+  preserve the deletion intent while any producer or owned plaintext path
+  remains; the barrier reopens only after the final sweep, protected-intent
+  removal, and local cleanup marker all complete.
+- The client accepts only an empty HTTP 204 response as definitive deletion.
+  After an ambiguous 401, it requests a signed-login challenge for the exact
+  username/device pair: an existing identity renews its session and retries
+  deletion. Only the challenge endpoint's complete identity-miss tuple -- HTTP
+  401, `Content-Type: text/plain; charset=utf-8`, and the exact body bytes
+  `invalid login identity\n` -- confirms that a prior delete already removed
+  the account. Every other 401 remains unresolved and preserves the protected
+  deletion intent. The confirmed phase is itself written and read back before
+  local authority is erased, so a crash or failed cleanup resumes without
+  restoring signed-in state or creating replacement keys.
+- Relay account deletion is serialized with ciphertext writes in the current
+  single-process V1 server. It deletes every unique committed-message or
+  pending-upload blob path where the account is sender or recipient. Any blob
+  deletion failure preserves all database ownership and account/session rows
+  for the same authenticated retry; only after all idempotent blob deletions
+  succeed does one transaction remove pending-write rows and the user.
+- Reset and confirmed account deletion surface any incomplete local
+  Keychain/media cleanup instead of silently reporting success.
 - V1 has no cross-device private-key backup or account recovery. Deleting the
   device identity is intentionally destructive.
 

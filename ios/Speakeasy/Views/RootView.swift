@@ -39,6 +39,7 @@ struct RootView: View {
                         appState.stopRemotePolling()
                         return
                     }
+                    appState.resumePlaintextProductionAfterBecomingActive()
                     appState.startRemotePolling()
                     await appState.refreshQuietly()
                 }
