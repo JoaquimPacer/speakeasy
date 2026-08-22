@@ -81,7 +81,10 @@ final class AppState: ObservableObject {
     /// that account permanently, so recovery must reach a definitive outcome
     /// before local reset is allowed.
     var isPendingRegistrationResetBlocked: Bool {
-        pendingRegistration?.session == nil
+        guard let pendingRegistration else {
+            return false
+        }
+        return pendingRegistration.session == nil
     }
 
     init(
