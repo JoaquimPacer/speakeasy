@@ -145,6 +145,10 @@ The server is **untrusted by design**:
 - Expiring sessions, single-use login challenges, upload/storage quotas, and
   rate limits reduce replay and resource-exhaustion risk but do not make the
   operator or relay a trust authority for contact identities
+- The release deployment accepts proxy-derived client IPs for rate limiting
+  only while the relay's host port is loopback-bound and the sole Apache proxy
+  overwrites `X-Real-IP` and `X-Forwarded-Proto` in both HTTP and HTTPS virtual
+  hosts. A deployment that exposes the relay directly must disable that trust.
 
 ## Threat Model
 

@@ -19,6 +19,9 @@ handling, and upload limits are hardened.
 - Use HTTPS and WSS for any iOS build that talks to a non-local relay.
 - Treat APNs, S3, Cloudflare, SSH, and App Store Connect material as secrets.
 - Prefer boring Docker Compose deployment before adding orchestration.
+- Trust proxy-derived client IPs only when the relay is unreachable directly
+  from untrusted networks and the one trusted proxy overwrites the forwarded
+  client-IP and protocol headers.
 
 ## Local Docker Development
 
@@ -188,6 +191,30 @@ cd /srv/speakeasy
 docker compose pull
 docker compose up -d
 ```
+
+### Trusted reverse-proxy headers
+
+The checked-in DigitalOcean Compose configuration enables
+`TRUST_PROXY_HEADERS` and publishes the relay only on
+`127.0.0.1:8080`. This is one security invariant: do not change that publish to
+`0.0.0.0`, a bare `8080:8080`, or a public host address while proxy-header
+trust is enabled.
+
+The other invariant belongs to Apache. Both the HTTP virtual host and the
+active HTTPS virtual host generated or maintained by Certbot must replace
+client-supplied forwarding values before proxying to loopback:
+
+```apache
+RequestHeader set X-Real-IP "expr=%{REMOTE_ADDR}"
+RequestHeader set X-Forwarded-Proto "expr=%{REQUEST_SCHEME}"
+```
+
+Apache's `set` action replaces any inbound value. `REMOTE_ADDR` is the peer
+Apache accepted, and `REQUEST_SCHEME` evaluates to `http` in the port-80 host
+and `https` in the TLS host. Validate the active configuration with
+`apache2ctl configtest` and inspect both virtual hosts before reloading. If the
+relay is ever exposed without this single trusted proxy, disable
+`TRUST_PROXY_HEADERS` first.
 
 Backups:
 

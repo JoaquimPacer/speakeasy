@@ -144,3 +144,20 @@ func TestClientIPPrefersOverwrittenRealIPThenRightmostForwarded(t *testing.T) {
 		t.Fatalf("clientIP with untrusted headers = %q, want direct peer 172.18.0.1", got)
 	}
 }
+
+func TestClientIPRejectsMalformedTrustedProxyValues(t *testing.T) {
+	server := &Server{options: Options{TrustProxyHeaders: true}}
+	request := httptest.NewRequest("GET", "http://relay.test/healthz", nil)
+	request.RemoteAddr = "172.18.0.1:54321"
+	request.Header.Set("X-Real-IP", "not-an-ip")
+	request.Header.Set("X-Forwarded-For", "192.0.2.123, also-not-an-ip, 203.0.113.9")
+
+	if got := server.clientIP(request); got != "203.0.113.9" {
+		t.Fatalf("clientIP with malformed proxy values = %q, want rightmost valid 203.0.113.9", got)
+	}
+
+	request.Header.Set("X-Forwarded-For", "not-an-ip, still-not-an-ip")
+	if got := server.clientIP(request); got != "172.18.0.1" {
+		t.Fatalf("clientIP with no valid proxy value = %q, want direct peer 172.18.0.1", got)
+	}
+}

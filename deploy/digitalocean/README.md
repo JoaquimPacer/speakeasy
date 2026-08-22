@@ -22,6 +22,11 @@ This deployment keeps the Go relay bound to localhost on the VPS and puts the
 existing web server in front of it for HTTPS. It is designed to coexist with
 the other Apache virtual hosts on the same Ubuntu Droplet.
 
+`TRUST_PROXY_HEADERS=true` is safe here only because Compose publishes port
+8080 on host loopback and Apache replaces, rather than appends to, both
+`X-Real-IP` and `X-Forwarded-Proto`. Do not expose port 8080 on a public host
+interface while that setting is enabled.
+
 ## DNS
 
 Create or verify these `A` records with each domain's authoritative DNS
@@ -89,6 +94,20 @@ sudo apache2ctl configtest
 sudo systemctl reload apache2
 ```
 
+The API virtual host must contain these directives in both its HTTP (`*:80`)
+and active HTTPS/Certbot (`*:443`, commonly `*-le-ssl.conf`) definitions:
+
+```apache
+RequestHeader set X-Real-IP "expr=%{REMOTE_ADDR}"
+RequestHeader set X-Forwarded-Proto "expr=%{REQUEST_SCHEME}"
+```
+
+`set` intentionally overwrites spoofable values supplied by the client. Check
+the generated Certbot virtual host after every certificate reconfiguration,
+then run `sudo apache2ctl configtest` before reloading Apache. Repository
+configuration does not prove that the active VPS configuration has been
+updated; verify it during the separately approved deployment.
+
 ## Static Kithra Site
 
 The app/support/privacy site is static HTML and can be served by Apache on the
@@ -125,6 +144,11 @@ Use Certbot with the Apache plugin after DNS resolves:
 sudo certbot --apache -d api.joaquimpacer.com
 sudo certbot --apache -d kithra.jqinnovation.com
 ```
+
+After Certbot changes the API site, confirm its active `*:443` virtual host
+still overwrites `X-Real-IP` and derives `X-Forwarded-Proto` from
+`REQUEST_SCHEME`. Do not enable `TRUST_PROXY_HEADERS` on the relay until both
+the HTTP and HTTPS virtual hosts satisfy that invariant.
 
 Then verify:
 
