@@ -1,5 +1,8 @@
 # Kithra Support Page Draft
 
+Publication status: Draft. DNS, TLS, deployment, and public reachability for
+`kithra.jqinnovation.com` have not yet been verified.
+
 Kithra is a private async video messaging app.
 
 ## Getting Started
@@ -17,8 +20,13 @@ plaintext content of your videos.
 
 ## Account Deletion
 
-Open Settings, then choose Delete account. This removes your relay account and
-clears local encrypted media and device keys from that device.
+Open Settings, then choose Delete account. A successful request removes your
+relay account, device and session records, contacts, message metadata, and
+associated relay ciphertext, and then clears the relay session, local encrypted
+media, verification records, replay receipts, and device keys from that device.
+If relay or local cleanup cannot finish, Kithra preserves recovery state and
+asks you to retry instead of reporting the deletion complete. This does not
+remove message copies already downloaded to a contact's device.
 
 ## Current Capabilities
 
