@@ -1,8 +1,10 @@
-# Kithra Abuse-Response Runbook — Owner-Approval Draft
+# Kithra Abuse-Response Runbook — Operational Draft
 
-> **Draft only.** This runbook is not an authorization for an agent to suspend
-> users, disclose data, contact law enforcement, or send substantive responses.
-> Joaquim must approve the operating process and designate any backup reviewer.
+> The public Community Guidelines are approved, but this internal workflow still
+> requires operational setup and testing. This runbook is not authorization for
+> an agent to suspend users, disclose data, contact law enforcement, or send
+> substantive responses. Joaquim must expressly authorize every such action and
+> designate any backup human reviewer.
 
 ## Objectives
 
@@ -53,7 +55,7 @@ An auto-reply is not human review. If Joaquim may be unreachable for several
 days, reliable coverage requires an expressly authorized backup reviewer with
 access limited to the private abuse queue. Until that exists and is tested,
 Kithra should say that reports are prioritized and reviewed as promptly as
-practical, without publishing a fixed 24-hour or three-business-day promise.
+practical, without publishing a fixed response-time promise.
 
 ## Release Readiness Checklist
 
@@ -65,4 +67,5 @@ practical, without publishing a fixed 24-hour or three-business-day promise.
 - [ ] Decide whether a backup human reviewer will be authorized.
 - [ ] Test report intake, acknowledgement, alerting, review notes, blocking, and
       appeal handling with synthetic non-sensitive data.
-- [ ] Approve public community rules and App Review notes.
+- [x] Approve public Community Guidelines.
+- [ ] Approve the final App Review safety notes.

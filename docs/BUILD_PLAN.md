@@ -287,9 +287,9 @@ blockers, and unverified assumptions.
 
 - Public relay: `api.joaquimpacer.com`; the previously deployed HTTPS relay must
   be updated to the exact integrated release candidate before submission.
-- Public support/privacy hostname: `kithra.jqinnovation.com` is recommended,
-  pending Joaquim's approval; DNS, TLS, deployment, and public reachability are
-  not yet verified.
+- Public support/privacy hostname: Joaquim approved
+  `kithra.jqinnovation.com` on 2026-08-22. The repository configuration is
+  migrated; DNS, TLS, deployment, and public reachability are not yet verified.
 - CI provider: default GitHub Actions macOS unless Xcode Cloud is clearly easier.
 - APNs key: create after core local message flow works.
 - DigitalOcean deployment: active, but the integrated relay version is not yet
@@ -297,12 +297,15 @@ blockers, and unverified assumptions.
 - Auth after app restart: the public-release candidate implements expiring,
   single-use Ed25519 login challenges, 30-day sessions, proactive/401 renewal,
   and device-bound iOS Keychain storage. Unsigned app/test builds and the relay
-  tests pass. A 2026-08-09 audit found that first registration still needs a
-  durable pre-request intent and a known client-generated device ID so a lost
-  committed response can recover through the existing signed-login challenge;
-  that narrow registration-protocol change awaits Joaquim's explicit approval.
-  Client-side fail-closed bootstrap/recovery UI and one-flight serialized
-  registration are implemented with focused XCTest coverage. Public release
-  remains blocked on the owner-gated registration-protocol change above, the
-  legacy server-session rollout decision, and runtime verification in CI or on
-  a functioning simulator.
+  tests pass. Joaquim approved C-REG on 2026-08-22: first registration now
+  persists an exact pre-request intent and client-generated device ID, retries
+  that same identity after an ambiguous response, and recovers a committed
+  registration only through the existing signed-login challenge. The relay
+  returns a generic conflict without a token for every duplicate username or
+  device ID. Client-side fail-closed bootstrap/recovery UI and one-flight
+  serialized registration have focused XCTest coverage; the relay path has
+  focused concurrency and race coverage. Two disposable simulators completed
+  registration, invite acceptance, reciprocal contacts, matching full safety
+  numbers, and verification on 2026-08-22. Public release still requires the
+  physical-device video smoke test and the owner-gated relay rollout, signing,
+  upload, and submission decisions.

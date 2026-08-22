@@ -123,7 +123,7 @@ Joaquim must decide and document:
 - Minimum intended user age and whether Kithra is child-directed.
 - The live questionnaire's objectionable-content answers.
 - The proposed rules and response commitments in
-  `docs/COMMUNITY_GUIDELINES_DRAFT.md`, including the operator workflow for
+  `docs/COMMUNITY_GUIDELINES.md`, including the operator workflow for
   metadata-only reports at `support@jqinnovation.com`.
 - Whether the current block/report controls are sufficient for V1 when the
   relay cannot inspect plaintext video.

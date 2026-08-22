@@ -1,7 +1,7 @@
 # DigitalOcean Beta Relay
 
 Relay hostname: `https://api.joaquimpacer.com`
-Target app/support hostname: `https://kithra.joaquimpacer.com`
+Target app/support hostname: `https://kithra.jqinnovation.com`
 
 Current beta status:
 
@@ -12,28 +12,27 @@ Current beta status:
 - Public health check: `https://api.joaquimpacer.com/healthz`; last verified
   healthy on 2026-08-04. The deployed process predates the integrated release
   branch and must not be treated as the release candidate.
-- Public site: pending. As of 2026-08-04, `kithra.joaquimpacer.com` has no
-  public A, AAAA, or CNAME answer.
+- Public site: deployment pending. DNS, TLS, site deployment, and public
+  reachability for `kithra.jqinnovation.com` must be verified before App Store
+  submission.
 - TLS: valid for the API hostname on 2026-08-04. Support-site TLS remains
-  pending until DNS and the virtual host are restored and verified.
+  pending until DNS and the virtual host are configured and verified.
 
 This deployment keeps the Go relay bound to localhost on the VPS and puts the
-existing web server in front of it for HTTPS. It is designed to coexist with the existing
-`joaquimpacer.com` website on the same Ubuntu Droplet.
+existing web server in front of it for HTTPS. It is designed to coexist with
+the other Apache virtual hosts on the same Ubuntu Droplet.
 
 ## DNS
 
-Create or verify an `A` record with the authoritative DNS provider (currently
-Cloudflare):
+Create or verify these `A` records with each domain's authoritative DNS
+provider:
 
-- Host/name: `api`
+- Hostname: `api.joaquimpacer.com`
 - Type: `A`
 - Value: the existing DigitalOcean Droplet public IPv4 address
 - TTL: default or 300 seconds
 
-For the public Kithra app/support site, create another `A` record:
-
-- Host/name: `kithra`
+- Hostname: `kithra.jqinnovation.com`
 - Type: `A`
 - Value: the existing DigitalOcean Droplet public IPv4 address
 - TTL: default or 300 seconds
@@ -42,7 +41,7 @@ After DNS propagates:
 
 ```bash
 dig +short api.joaquimpacer.com
-dig +short kithra.joaquimpacer.com
+dig +short kithra.jqinnovation.com
 ```
 
 ## VPS Layout
@@ -101,10 +100,10 @@ Copy the site files to:
 /var/www/kithra
 ```
 
-Copy `apache-kithra.joaquimpacer.com.conf` to:
+Copy `apache-kithra.jqinnovation.com.conf` to:
 
 ```text
-/etc/apache2/sites-available/kithra.joaquimpacer.com.conf
+/etc/apache2/sites-available/kithra.jqinnovation.com.conf
 ```
 
 Enable it:
@@ -113,7 +112,7 @@ Enable it:
 sudo mkdir -p /var/www/kithra
 sudo rsync -a deploy/digitalocean/kithra-site/ /var/www/kithra/
 sudo chown -R www-data:www-data /var/www/kithra
-sudo a2ensite kithra.joaquimpacer.com.conf
+sudo a2ensite kithra.jqinnovation.com.conf
 sudo apache2ctl configtest
 sudo systemctl reload apache2
 ```
@@ -124,15 +123,17 @@ Use Certbot with the Apache plugin after DNS resolves:
 
 ```bash
 sudo certbot --apache -d api.joaquimpacer.com
-sudo certbot --apache -d kithra.joaquimpacer.com
+sudo certbot --apache -d kithra.jqinnovation.com
 ```
 
 Then verify:
 
 ```bash
 curl -fsS https://api.joaquimpacer.com/healthz
-curl -fsS https://kithra.joaquimpacer.com/
-curl -fsS https://kithra.joaquimpacer.com/privacy.html
+curl -fsS https://kithra.jqinnovation.com/
+curl -fsS https://kithra.jqinnovation.com/support.html
+curl -fsS https://kithra.jqinnovation.com/privacy.html
+curl -fsS https://kithra.jqinnovation.com/community-guidelines.html
 ```
 
 ## iOS Release Config

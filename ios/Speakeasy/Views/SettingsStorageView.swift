@@ -232,8 +232,8 @@ struct SettingsStorageView: View {
         }
     }
 
-    private static let supportURL = URL(string: "https://kithra.joaquimpacer.com/support.html")!
-    private static let privacyPolicyURL = URL(string: "https://kithra.joaquimpacer.com/privacy.html")!
+    private static let supportURL = URL(string: "https://kithra.jqinnovation.com/support.html")!
+    private static let privacyPolicyURL = URL(string: "https://kithra.jqinnovation.com/privacy.html")!
     private static let supportEmailURL = URL(string: "mailto:support@jqinnovation.com")!
     private static let securityEmailURL = URL(string: "mailto:security@jqinnovation.com")!
 }

@@ -159,15 +159,14 @@ to store each secret safely.
 
 - [ ] Draft privacy policy.
   - Must disclose metadata and encrypted content storage accurately.
-  - Status: Draft and static page exist. As of 2026-08-09,
-    `kithra.joaquimpacer.com` has no public A, AAAA, or CNAME record, so the
-    App Store privacy URL is not reachable. `kithra.jqinnovation.com` is the
-    recommended replacement, pending Joaquim's hostname and deployment
-    approval.
+  - Status: Joaquim approved `kithra.jqinnovation.com`; the draft and static
+    page use that hostname. DNS, TLS, deployment, and public reachability remain
+    to be completed and verified before submission.
 - [ ] Draft support URL/page.
   - Status: Draft and static page exist with `support@jqinnovation.com` and
-    `security@jqinnovation.com`. Choose the final hostname, publish over HTTPS,
-    and verify the public support URL before submission.
+    `security@jqinnovation.com` on the approved `kithra.jqinnovation.com`
+    hostname. Publish over HTTPS and verify the public support URL before
+    submission.
 - [ ] Add in-app account deletion before public review.
   - Status: Initial authenticated delete-account endpoint and iOS Settings flow added on 2026-05-27. Needs end-to-end real-device verification against the beta HTTPS relay before App Review.
 - [ ] Prepare App Privacy labels.
@@ -184,15 +183,15 @@ to store each secret safely.
     must still approve the App Review contact, copyright, categories,
     standard/custom EULA, content rights, age rating, privacy labels, English
     localization, no-push V1, final copy, and final screenshots.
-- [ ] Declare DSA trader or non-trader status in App Store Connect.
-  - Status: Owner/legal decision pending. Apple requires the declaration even
-    if EU distribution is not selected.
+- [x] Declare DSA trader or non-trader status in App Store Connect.
+  - Decision: Joaquim selected and saved DSA non-trader status on 2026-08-21.
 - [ ] Approve and staff the V1 user-content safety process.
   - Status: Blocking and metadata-only reporting are implemented, but public
     acceptable-use/community rules, report categories, operator response
     workflow, and final App Review explanation remain owner decisions. Review
-    the proposals in `docs/COMMUNITY_GUIDELINES_DRAFT.md` and
-    `docs/ABUSE_RESPONSE_RUNBOOK_DRAFT.md`; they are not approved or published.
+    `docs/COMMUNITY_GUIDELINES.md` and
+    `docs/ABUSE_RESPONSE_RUNBOOK_DRAFT.md`; publication and operational setup
+    remain pending.
 - [ ] Complete encryption export compliance in App Store Connect.
   - Decision: Option B selected by Joaquim on 2026-07-20. The next upload declares
     `ITSAppUsesNonExemptEncryption = true` so App Store Connect presents the
