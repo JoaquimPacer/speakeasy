@@ -25,7 +25,13 @@ not as the primary friend-distribution channel.
 
 - Preserve the zero-knowledge relay boundary. Plaintext media and private
   encryption keys must never reach the relay.
-- Use libsodium-backed primitives only; do not invent cryptography.
+- Use libsodium-backed primitives for all client content and identity
+  cryptography; do not invent cryptography. C-CRYPTO-01 narrowly permits the
+  content-blind Go relay to use `crypto/ed25519` only to verify libsodium login
+  proofs, `crypto/rand` only for relay challenges, identifiers, and bearer
+  tokens, and `crypto/sha256` only to hash those high-entropy bearer tokens at
+  rest. The relay must not perform message-content cryptography, and no other
+  standard-library crypto exception is implied.
 - V1 encrypts every video with a fresh content key. Do not claim full
   Signal-style forward secrecy.
 - Do not add analytics, tracking, advertising SDKs, or telemetry.
