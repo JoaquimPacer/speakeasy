@@ -1,3 +1,4 @@
+@preconcurrency import AVFoundation
 import Foundation
 import XCTest
 @testable import Kithra
@@ -5,6 +6,87 @@ import XCTest
 final class MediaPipelineStagingTests: XCTestCase {
     private let ciphertext = Data("verified incoming ciphertext".utf8)
     private let ciphertextHash = Data(hex: "93cd568f197d6a42027ae6e89d458db225c27d43e79007fd0f9fff31f75126d8")
+
+    func testDeliveryExportSessionExplicitlySanitizesSourceMetadata() async throws {
+        let outputURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("delivery-\(UUID().uuidString)")
+            .appendingPathExtension("mp4")
+        let session = try XCTUnwrap(
+            DefaultMediaPipeline.makeDeliveryExportSession(
+                asset: AVMutableComposition(),
+                presetName: AVAssetExportPresetMediumQuality,
+                outputURL: outputURL
+            )
+        )
+
+        XCTAssertEqual(session.outputURL?.standardizedFileURL, outputURL.standardizedFileURL)
+        XCTAssertEqual(session.outputFileType, .mp4)
+        XCTAssertNotNil(session.metadataItemFilter)
+        let metadata = try XCTUnwrap(session.metadata)
+        let creationDate = try XCTUnwrap(metadata.first)
+        let creationDateValue = try await creationDate.load(.stringValue)
+        XCTAssertEqual(metadata.count, 1)
+        XCTAssertEqual(creationDate.identifier, .quickTimeMetadataCreationDate)
+        XCTAssertEqual(
+            creationDateValue,
+            "1970-01-01T00:00:00Z"
+        )
+    }
+
+    func testDeliveryCompressionDoesNotCopySensitiveContainerMetadata() async throws {
+        let fixture = try makeFixture()
+        defer { try? fixture.fileManager.removeItem(at: fixture.root) }
+
+        let sourceURL = fixture.root.appendingPathComponent("metadata-source.mov")
+        let sensitiveValues = [
+            "+37.3317-122.0301+001.000/",
+            "KithraSensitiveMake",
+            "KithraSensitiveModel",
+            "KithraSensitiveSourceApp",
+            "2026-08-21T12:34:56-0500"
+        ]
+        try await makeMetadataTaggedMovie(
+            at: sourceURL,
+            workRoot: fixture.root,
+            sensitiveValues: sensitiveValues
+        )
+        let sourceValues = try await metadataValues(at: sourceURL)
+        for value in sensitiveValues {
+            XCTAssertTrue(sourceValues.contains(value), "Synthetic source lost \(value)")
+        }
+
+        let outputURL: URL
+        do {
+            outputURL = try await fixture.pipeline.compressForDelivery(
+                rawVideoURL: sourceURL,
+                quality: .standard720p,
+                permit: ForegroundPlaintextPermit()
+            )
+        } catch {
+            let nsError = error as NSError
+            let unavailableEncoderCodes = [
+                AVError.Code.encoderNotFound.rawValue,
+                AVError.Code.encoderTemporarilyUnavailable.rawValue
+            ]
+            if nsError.domain == AVFoundationErrorDomain,
+               unavailableEncoderCodes.contains(nsError.code) {
+                throw XCTSkip("This host has no AVFoundation encoder for the delivery preset.")
+            }
+            throw error
+        }
+        defer { try? fixture.fileManager.removeItem(at: outputURL) }
+
+        let outputValues = try await metadataValues(at: outputURL)
+        for value in sensitiveValues {
+            XCTAssertFalse(outputValues.contains(value), "Delivery export retained \(value)")
+        }
+        XCTAssertTrue(
+            outputValues.contains("1970-01-01T00:00:00Z"),
+            "Delivery export did not replace the source creation date."
+        )
+        let duration = try await AVURLAsset(url: outputURL).load(.duration)
+        XCTAssertGreaterThan(duration.seconds, 0)
+    }
 
     func testReceivedPackageRemainsStagedUntilExplicitCommit() async throws {
         let fixture = try makeFixture()
@@ -275,6 +357,108 @@ final class MediaPipelineStagingTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: recovered.localEncryptedCopyURL), ciphertext)
     }
 
+    private func makeMetadataTaggedMovie(
+        at outputURL: URL,
+        workRoot: URL,
+        sensitiveValues: [String]
+    ) async throws {
+        let audioURL = workRoot.appendingPathComponent("metadata-source.caf")
+        let format = try XCTUnwrap(
+            AVAudioFormat(
+                commonFormat: .pcmFormatFloat32,
+                sampleRate: 8_000,
+                channels: 1,
+                interleaved: false
+            )
+        )
+        do {
+            let audioFile = try AVAudioFile(forWriting: audioURL, settings: format.settings)
+            let buffer = try XCTUnwrap(
+                AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 800)
+            )
+            buffer.frameLength = 800
+            if let samples = buffer.floatChannelData?[0] {
+                samples.initialize(repeating: 0, count: Int(buffer.frameLength))
+            }
+            try audioFile.write(from: buffer)
+        }
+
+        let audioAsset = AVURLAsset(url: audioURL)
+        let sourceTracks = try await audioAsset.loadTracks(withMediaType: .audio)
+        let sourceTrack = try XCTUnwrap(sourceTracks.first)
+        let audioDuration = try await audioAsset.load(.duration)
+        let composition = AVMutableComposition()
+        let compositionTrack = try XCTUnwrap(
+            composition.addMutableTrack(
+                withMediaType: .audio,
+                preferredTrackID: kCMPersistentTrackID_Invalid
+            )
+        )
+        try compositionTrack.insertTimeRange(
+            CMTimeRange(start: .zero, duration: audioDuration),
+            of: sourceTrack,
+            at: .zero
+        )
+
+        let exportSession = try XCTUnwrap(
+            AVAssetExportSession(
+                asset: composition,
+                presetName: AVAssetExportPresetPassthrough
+            )
+        )
+        exportSession.outputURL = outputURL
+        exportSession.outputFileType = .mov
+        exportSession.metadata = zip(
+            [
+                AVMetadataIdentifier.quickTimeMetadataLocationISO6709,
+                .quickTimeMetadataMake,
+                .quickTimeMetadataModel,
+                .quickTimeMetadataSoftware,
+                .quickTimeMetadataCreationDate
+            ],
+            sensitiveValues
+        ).map { identifier, value in
+            let item = AVMutableMetadataItem()
+            item.identifier = identifier
+            item.value = value as NSString
+            item.extendedLanguageTag = "und"
+            return item
+        }
+
+        let exportBox = TestSendableExportSession(exportSession)
+        try await withCheckedThrowingContinuation { continuation in
+            exportBox.session.exportAsynchronously {
+                switch exportBox.session.status {
+                case .completed:
+                    continuation.resume()
+                case .failed:
+                    continuation.resume(
+                        throwing: exportBox.session.error ?? MediaPipelineError.exportFailed
+                    )
+                case .cancelled:
+                    continuation.resume(throwing: MediaPipelineError.exportCancelled)
+                default:
+                    continuation.resume(throwing: MediaPipelineError.exportFailed)
+                }
+            }
+        }
+    }
+
+    private func metadataValues(at url: URL) async throws -> Set<String> {
+        let asset = AVURLAsset(url: url)
+        var metadata = try await asset.load(.commonMetadata)
+        for format in try await asset.load(.availableMetadataFormats) {
+            metadata.append(contentsOf: try await asset.loadMetadata(for: format))
+        }
+        var values: Set<String> = []
+        for item in metadata {
+            if let value = try await item.load(.stringValue) {
+                values.insert(value)
+            }
+        }
+        return values
+    }
+
     private func makeFixture() throws -> PipelineFixture {
         let fileManager = FileManager.default
         let root = fileManager.temporaryDirectory
@@ -346,6 +530,14 @@ final class MediaPipelineStagingTests: XCTestCase {
             createdAt: createdAt,
             expiresAt: createdAt.addingTimeInterval(86_400)
         )
+    }
+}
+
+private final class TestSendableExportSession: @unchecked Sendable {
+    let session: AVAssetExportSession
+
+    init(_ session: AVAssetExportSession) {
+        self.session = session
     }
 }
 

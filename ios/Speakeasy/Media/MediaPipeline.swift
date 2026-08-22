@@ -705,7 +705,11 @@ final class DefaultMediaPipeline: MediaPipelining {
         }
 
         let asset = AVURLAsset(url: rawVideoURL)
-        guard let exportSession = AVAssetExportSession(asset: asset, presetName: quality.exportPreset) else {
+        guard let exportSession = Self.makeDeliveryExportSession(
+            asset: asset,
+            presetName: quality.exportPreset,
+            outputURL: outputURL
+        ) else {
             throw MediaPipelineError.exportSessionUnavailable
         }
         plaintextTempJanitor.preserveWhileInUse(outputURL)
@@ -724,10 +728,6 @@ final class DefaultMediaPipeline: MediaPipelining {
             removePlaintextTemporaryFile(outputURL)
             throw error
         }
-
-        exportBox.session.outputURL = outputURL
-        exportBox.session.outputFileType = .mp4
-        exportBox.session.shouldOptimizeForNetworkUse = true
 
         return try await withCheckedThrowingContinuation { continuation in
             let didStart = permit.startOperation(operationID) {
@@ -767,6 +767,34 @@ final class DefaultMediaPipeline: MediaPipelining {
                 return
             }
         }
+    }
+
+    static func makeDeliveryExportSession(
+        asset: AVAsset,
+        presetName: String,
+        outputURL: URL
+    ) -> AVAssetExportSession? {
+        guard let exportSession = AVAssetExportSession(
+            asset: asset,
+            presetName: presetName
+        ) else {
+            return nil
+        }
+
+        exportSession.outputURL = outputURL
+        exportSession.outputFileType = .mp4
+        exportSession.shouldOptimizeForNetworkUse = true
+        // AVAssetExportSession copies source metadata by default. The sharing
+        // filter removes user-identifying source items such as location. Some
+        // formats still preserve their source creation date, so replace that
+        // value with a fixed non-source timestamp and write no other metadata.
+        let sanitizedCreationDate = AVMutableMetadataItem()
+        sanitizedCreationDate.identifier = .quickTimeMetadataCreationDate
+        sanitizedCreationDate.value = "1970-01-01T00:00:00Z" as NSString
+        sanitizedCreationDate.extendedLanguageTag = "und"
+        exportSession.metadataItemFilter = .forSharing()
+        exportSession.metadata = [sanitizedCreationDate]
+        return exportSession
     }
 
     func makeThumbnail(
