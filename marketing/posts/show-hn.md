@@ -1,5 +1,9 @@
 # Draft: Show HN
 
+> Unpublished draft. Kithra is pre-submission; do not post this until the public
+> App Store URL exists, the relay is verified from a clean host, and every
+> product-status statement has been checked.
+
 Angle: technical and humble. HN rewards a real builder who shows up and answers everything, and punishes hype. Neutral title, no exclamation marks, no superlatives.
 
 Submit URL: https://news.ycombinator.com/submit
@@ -23,17 +27,17 @@ Keep it exactly that plain. No "fastest," no "finally," no marketing. The title'
 
 ## First comment (post this yourself, right after submitting)
 
-Hi HN. I built Kithra, an app for async video messages (the Marco Polo style of thing, where you send a short clip and your friend watches it later) where only the recipient can open the video.
+Hi HN. I built Kithra, an app for async video messages (the Marco Polo style of thing, where you send a short clip and your friend watches it later) where the sender and intended recipient can play the video but the relay cannot decrypt it.
 
 The reason it exists: my family uses Marco Polo, and its Common Sense privacy evaluation is a WARNING rating. No end-to-end encryption, the company can access your video content, your data gets profiled. I wanted the same easy back-and-forth without that, and there was no open-source, self-hostable, end-to-end encrypted option for async video, so I wrote one.
 
-How it works. The client (Swift, iOS) records a video and encrypts it on the device with the recipient's public key before upload. The server is a small Go binary that stores and forwards a sealed blob it cannot open. The recipient's phone downloads and decrypts. Crypto is libsodium: XChaCha20-Poly1305, with a fresh ephemeral key per message, so compromising one key does not retroactively open older messages.
+How it works. The native Swift iPhone client records a video, creates a fresh random content key, encrypts locally, and seals that key to a verified contact device before upload. The Go relay stores and forwards ciphertext it cannot decrypt. The recipient's iPhone verifies the signed envelope and ciphertext hash before decrypting locally. The app uses libsodium-backed X25519, Ed25519, and XChaCha20-Poly1305. Fresh content keys limit one content-key exposure, but V1 has no ratchet and does not provide Signal-style forward secrecy.
 
 What the server knows, stated plainly: metadata only. Who sent to whom, when, and the blob size. It never sees content. I think saying that out loud matters, because a privacy claim with an asterisk you have to dig for is worse than no claim.
 
-Self-hosting is the point, not a footnote. If you do not want to trust my relay, `docker-compose up -d` and it is yours. Local filesystem storage by default, optional S3-compatible. No analytics or telemetry. No phone number to sign up, just usernames or invite codes. MIT licensed.
+Self-hosting the relay is the point, not a footnote. If you do not want to use my relay, `docker compose up -d` runs the local-filesystem Go relay. S3-compatible storage is not implemented. The project contains no analytics, advertising, tracking, or telemetry. Accounts use usernames rather than phone numbers, and contacts connect through invite codes. MIT licensed. Self-hosting the relay does not install the native iPhone client.
 
-The honest state of it: iOS first, and the App Store build is in review (`[APP STORE LINK - pending]`, I will edit it in when it clears). Android (Kotlin) is planned, not built. It is 1:1 only right now, no groups, no web client yet. The self-host relay and all the code are up today at `[OPEN-SOURCE REPO LINK]`.
+The honest state of it: V1 is iPhone-only and still pre-submission, with no public App Store URL (`[APP STORE LINK - pending]`). The Kotlin directory is a future-client scaffold, not a usable Android app. It is 1:1 only right now, with no groups or web client. The relay source and iPhone code are at `[OPEN-SOURCE REPO LINK]`.
 
 Where I would most value feedback: the client-side crypto and key handling, the metadata tradeoff and whether there is a reasonable way to shrink it, and anything about the self-host experience that would stop you running it. I am here for the day, so ask away.
 

@@ -1,0 +1,17 @@
+services:
+  speakeasy:
+    build:
+      context: ../../server
+    environment:
+      SPEAKEASY_ADDR: ":8080"
+      DB_PATH: /data/speakeasy.db
+      STORAGE_PATH: /data/blobs
+      UNDELIVERED_RETENTION_DAYS: "7"
+      # Safe only while the host publish remains loopback-only and Apache
+      # overwrites the trusted forwarding headers before proxying requests.
+      TRUST_PROXY_HEADERS: "true"
+    ports:
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - /srv/speakeasy/data:/data
+    restart: unless-stopped

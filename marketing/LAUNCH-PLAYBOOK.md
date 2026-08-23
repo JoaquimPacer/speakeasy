@@ -1,12 +1,16 @@
 # Kithra launch and credibility playbook
 
-The plan for taking Kithra from a private repo to a launch that the privacy and self-hosting crowd actually respects. Written for Joaquim, 2026-07-19.
+> Unpublished internal plan. Do not post or quote this file as current product
+> status. Re-check every external link, community rule, comparison, and product
+> claim immediately before launch.
 
-Related docs: [MARKETING talking points](../docs/MARKETING.md), [REPO_MAP](../docs/REPO_MAP.md), [SECURITY](../docs/SECURITY.md), [README](../README.md). The pre-launch checklist lives in [credibility-plan.md](credibility-plan.md). The ready-to-post drafts are in [posts/](posts/).
+The plan for taking Kithra from a public source repository to a launch that the privacy and self-hosting crowd actually respects. Written for Joaquim and updated 2026-08-04.
 
-Product recap in one line: Kithra is Marco Polo without the spying. Async video messages that only the recipient can open, relayed through a Go server anyone can run with one Docker command. iOS first, Android later. MIT licensed. The crypto is libsodium (XChaCha20-Poly1305, per-message ephemeral keys), and the relay only ever handles a sealed blob it cannot read.
+Related docs: [MARKETING talking points](../docs/MARKETING.md), [REPO_MAP](../docs/REPO_MAP.md), [SECURITY](../docs/SECURITY.md), [README](../README.md). The pre-launch checklist lives in [credibility-plan.md](credibility-plan.md). The unpublished post drafts are in [posts/](posts/).
 
-App Store link status: NOT live yet. Everywhere below it appears as `[APP STORE LINK - pending]`. The open-source repo appears as `[OPEN-SOURCE REPO LINK]`. Submission target is July 24, so the whole sequence hangs off the day that link goes live.
+Product recap in one line: Kithra is a native iPhone app for private asynchronous video messages, backed by a self-hostable Go relay that stores ciphertext it cannot decrypt. It uses libsodium-backed primitives and a fresh random content key for each video. Those content keys limit single-key exposure; V1 does not provide Signal-style forward secrecy. Android is a later release, and the current Android directory is only a scaffold.
+
+App Store status: PRE-SUBMISSION. Kithra is not currently in App Store review and has no public install link. Everywhere below it appears as `[APP STORE LINK - pending]`; the repository appears as `[OPEN-SOURCE REPO LINK]`. Launch timing is relative to the day Joaquim confirms the public App Store link is live, not a fixed calendar date.
 
 ---
 
@@ -26,7 +30,7 @@ Where they are: Hacker News (Show HN), r/selfhosted, r/privacy, r/degoogle, the 
 
 Who they are: local service businesses. A massage therapist, an auto shop, a dance studio. They do not care about XChaCha20-Poly1305. They will never read a threat model.
 
-What Kithra does for them: it is evidence. It proves that the person building their website can ship a real product end to end: a spec, working cryptography, a native iOS app, a server, and an App Store review. That is a credibility signal money cannot buy, and it makes the paid work easier to sell.
+What Kithra can do for them after launch: it is evidence that the person building their website can ship a real product end to end—a spec, working cryptography, a native iPhone app, a server, and a public release. Do not claim the App Store milestone before it happens.
 
 Where they are: not on Hacker News. They are reachable through the JQ Innovation brand on X and YouTube, the future jqinnovation.com portfolio, and word of mouth. To this audience Kithra is a short, plain-language story ("I built a private video app from scratch, here is the two-minute version"), never a technical deep dive.
 
@@ -57,7 +61,7 @@ The single biggest failure mode is a cold account dropping a launch post into a 
 The fix is a genuine presence built over roughly one to two weeks before the launch post. The full checklist is in [credibility-plan.md](credibility-plan.md). The short version:
 
 - Real posting history on the personal account: helpful comments, honest answers, disclosure that you are a developer when it is relevant. No lurking-then-launching.
-- The repo is public, the README is clean, and the self-host path genuinely works from a clean machine. r/selfhosted's rule is explicit that promoted apps "must be production ready and have docs," so this is a hard gate, not a nice-to-have. (Source: r/selfhosted rules, retrieved via https://leadsrover.io/subreddits/r/selfhosted)
+- The repo is public, the README is clean, and the relay self-host path genuinely works from a clean machine. r/selfhosted's rule is explicit that promoted apps "must be production ready and have docs," so this is a hard gate, not a nice-to-have. Self-hosting the relay is not an alternate way to install the iPhone app. (Source to re-check before posting: r/selfhosted rules, retrieved via https://leadsrover.io/subreddits/r/selfhosted)
 - A short demo (a 30 to 60 second screen recording of recording, sending, and opening a message) is ready, because "show me" beats "trust me" every time in these rooms.
 - The honest metadata limit is written down plainly before anyone asks, because on r/privacy and HN someone will ask within the first ten minutes.
 
@@ -80,17 +84,17 @@ Read every subreddit's own sidebar and rules the day before you post, because mo
 
 - URL: https://www.reddit.com/r/selfhosted/
 - Verified rule: "Do not spam or promote your own projects too much. We expect you to follow this Reddit self-promotion guideline. Promoted apps must be production ready and have docs. No direct ads for web hosting or VPS. Only mention your service in comments if it's relevant and adds value." (Source: https://leadsrover.io/subreddits/r/selfhosted)
-- What that means for you: the docker-compose path has to actually work and be documented, and you disclose you are the developer. This is the friendliest room for Kithra, so it goes first among the subreddits.
+- What that means for you: the Docker Compose relay path has to work from a clean host and be documented, and you disclose you are the developer. Re-check the live rules before deciding whether this community should go first.
 
 ### r/privacy (the "why I built this" angle)
 
 - URL: https://www.reddit.com/r/privacy/
-- Status: UNVERIFIED specifics. I could not fetch the live rules and no aggregator listed them, so read the sidebar yourself before posting. What is well established: r/privacy is strict about anything that smells like an ad. Open-source privacy tools do get discussed there, but the post has to read as "here is a problem and an honest, verifiable answer," with the developer disclosed and the honest limits stated up front. Frame it as the Marco Polo problem, not as a product pitch.
+- Status: UNVERIFIED specifics. Read the live sidebar yourself before posting. Open-source privacy tools may be discussed there, but the post must disclose the developer and state the relay metadata and forward-secrecy limits up front. Frame it as a problem and a verifiable implementation, not as a privacy guarantee.
 
 ### r/degoogle (the "de-Google your video chats" angle)
 
 - URL: https://www.reddit.com/r/degoogle/
-- Status: UNVERIFIED specifics. Same caveat, read the sidebar first. Known character of the community: they welcome concrete open-source alternatives to Big Tech services and remove low-effort or pure-ad posts. Be honest that it is iOS first, because a large slice of this crowd runs GrapheneOS or LineageOS on Android and will (fairly) point out that they cannot use it yet. Say the Kotlin client is planned.
+- Status: UNVERIFIED specifics. Read the live sidebar first. Be direct that V1 is iPhone-only. The Kotlin directory is a scaffold for a later native Android client, not something GrapheneOS or LineageOS users can install today.
 
 ### r/PrivacyGuides and the Privacy Guides forum
 
@@ -113,8 +117,8 @@ Everything is anchored to the day the App Store link goes live. Call that Day 0.
 
 Do not fire every channel in the same hour. Stagger them. Reddit flags identical cross-posts, each community wants a native post written for it, and you can only genuinely be present in one thread at a time. Presence is the whole game.
 
-- T-14 to T-3: run the [credibility-plan.md](credibility-plan.md) checklist. Build history on the personal account, make the repo public, verify the self-host path from a clean machine, cut the demo video, and start Privacy Guides identity verification.
-- T-2: final read of every subreddit sidebar. Confirm the repo README and docs are clean. Confirm docker-compose up works one more time.
+- T-14 to T-3: run the [credibility-plan.md](credibility-plan.md) checklist. Build history on the personal account, verify the relay self-host path from a clean machine, cut the demo video, and start Privacy Guides identity verification.
+- T-2: final read of every subreddit sidebar. Confirm the repo README and docs are clean. Confirm the Docker Compose relay works one more time.
 - T-1: line up the four drafts in [posts/](posts/) with the real links pasted in. Sleep.
 - Day 0 morning (Tue to Thu, ~8 to 10am ET): post the Show HN with `[OPEN-SOURCE REPO LINK]` in the URL field, add your backstory comment, and then stay in the thread for three to four hours answering everything. This is the anchor event. See [posts/show-hn.md](posts/show-hn.md).
 - Day 0 afternoon or Day +1: post to r/selfhosted. The self-host story is strongest and the docs are ready. See [posts/reddit-selfhosted.md](posts/reddit-selfhosted.md).
@@ -124,7 +128,7 @@ Do not fire every channel in the same hour. Stagger them. Reddit flags identical
 - Ongoing, in parallel: the JQ Innovation brand posts the build-in-public thread and demo video on X and YouTube. This is Audience B and runs on its own clock, timed loosely to the launch but not competing for your attention during the Show HN window.
 - Privacy Guides Project Showcase: whenever identity verification clears.
 
-Fallback if App Store review slips past July 24: the self-host path means people can still run Kithra without the App Store. If the iOS link is not live on your chosen Day 0, you can still launch on the repo and a TestFlight or self-host build, lead everywhere with "self-host it today, iOS App Store link coming this week," and swap the App Store link in the moment it clears. Do not hold the whole launch hostage to Apple's review queue, but do be honest that the polished iOS install is a few days out.
+If App Store review takes longer than expected, do not imply that self-hosting the relay installs Kithra or use internal TestFlight as a public fallback. Continue technical discussion around the source and relay only if it is useful, label the iPhone app pre-release accurately, and postpone the end-user launch sequence until the public App Store URL exists.
 
 ---
 
@@ -138,6 +142,6 @@ I looked at how comparable projects went from nothing to real traction. Four cas
 
 3. Be genuinely open source with a self-host path that works, then keep showing up on HN. Ente, an end-to-end encrypted Google Photos alternative, launched on Hacker News in 2021 and grew steadily by posting new Show HNs as it hit real milestones (the v1.0 and the full open-sourcing each got their own). People could run it and read it, so trust was not required. (Sources: https://news.ycombinator.com/item?id=28347439 , https://news.ycombinator.com/item?id=43516081 )
 
-4. Answer every comment like a person, and name the sharp comparison. The dev-tool launches that work have the founder replying thoroughly and humbly (one cited fly.io launch had the founder answer 53 comments), and the ones that spread have a one-line comparison that occupies an empty square: "Google Photos, but yours." Kithra already has its version of that in the README table: "Marco Polo, but only your friend can open it," backed by Marco Polo's actual WARNING privacy rating. (Sources: https://www.markepear.dev/blog/dev-tool-hacker-news-launch , https://privacy.commonsense.org/evaluation/Marco-Polo-Video-Walkie-Talkie )
+4. Answer every comment like a person, and name the sharp comparison. The dev-tool launches that work have the founder replying thoroughly and humbly, and the ones that spread have a one-line comparison that occupies an empty square: "Google Photos, but yours." Kithra's accurate version is "asynchronous video messages whose content the relay cannot decrypt." Re-check any Marco Polo privacy comparison against the cited source immediately before publishing. (Sources to re-check: https://www.markepear.dev/blog/dev-tool-hacker-news-launch , https://privacy.commonsense.org/evaluation/Marco-Polo-Video-Walkie-Talkie )
 
 The repeatable pattern underneath all four: pick one empty square in the market and name it, solve a problem you personally have and tell that story, make the thing runnable and readable so nobody has to trust you, show up as a human and answer everything, and let the sharp comparison do the spreading. That is the template Kithra should run.

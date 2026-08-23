@@ -1,35 +1,67 @@
-# Operating loop: building apps across two AI models
+# Operating Loop: Codex-Led App Delivery
 
-One page on how Joaquim runs app builds using Claude Code and ChatGPT Codex together, without paying twice for the same work. Kithra is the first app through this loop; the pattern is meant to generalize to every app after it.
+Kithra uses one durable, repository-centered workflow so work can continue from
+the Codex CLI, VS Code extension, desktop app, or Codex Cloud without relying on
+one chat transcript.
 
-## The two roles
-- **Claude Code (Windows)**: the orchestrator and generalist. Planning, the Go relay/server, all docs, Trello, marketing, reviewing diffs, cross-cutting infra. Instructions live in CLAUDE.md.
-- **ChatGPT Codex (Mac)**: the app builder. Native Swift and Kotlin, on-Mac builds (Xcode, Fastlane), and its own computer-use checks. Instructions live in AGENTS.md.
+## Roles
 
-Rule of thumb: if it needs the Mac or native app code, Codex does it. Everything around it (what to build, why, docs, launch, review) is Claude.
+- **Codex:** primary implementation, diagnosis, documentation, verification,
+  PR maintenance, and technical-review operator.
+- **Joaquim:** sole code owner and final authority for product, privacy, legal,
+  export-compliance, storefront, credentials, merge, deployment, signing,
+  submission, and public-release decisions.
+- **Optional reviewers:** people or other models may supply evidence and
+  critiques. Their comments are advisory; Codex evaluates the reasoning and
+  escalates genuine owner decisions to Joaquim.
 
-## The bridge is git
-State lives in the repo. Claude writes a brief or a prompt, Codex does the work on a branch and commits, Claude reads the branch and reviews. Nothing important lives only in a chat window.
+## Durable State
 
-Three ways to hand work to Codex, from most friction to least:
-1. **Paste a prompt (current):** Claude writes it, you paste into Codex in the ChatGPT app. Works, but manual.
-2. **Commit the brief:** Claude writes the brief to a file, you pull on the Mac, Codex reads it there. Less pasting.
-3. **Codex CLI or IDE (best):** Codex runs inside the repo with direct file access, the way Claude Code does. No paste at all. Worth trying on the Mac.
+Git and GitHub are the source of truth:
 
-For Claude to review Codex's work, Codex pushes its branch and Claude reads it from Windows. No screen-sharing needed for code.
+- `AGENTS.md` contains repository-wide operating constraints.
+- `docs/BUILD_PLAN.md` records current decisions, status, and release gaps.
+- `docs/OWNER_SETUP.md` records non-secret owner actions.
+- `docs/CODEX_REVIEW_LOOP.md` defines reliable PR handoffs.
+- PR heads, comments, and checks record the exact implementation state.
 
-## Guardrails
-- Branches, never straight to main. Any bad change is one `git revert` away.
-- Auto-push to TestFlight is fine (internal testers only). The public App Store release is a manual approval.
-- Secrets never enter git. Before open-sourcing anything, scrub the full history.
+Local Codex Memories can help recall preferences and prior context, but they do
+not replace checked-in rules or current repository evidence.
 
-## Toward automated loops
-The automation is scripts and CI (Fastlane, GitHub Actions), and it stays model-agnostic: a model is one step in the loop, never the engine. Fastlane collapses build, sign, and upload into one command, so a push can ship a build. Each brief Claude writes is reusable, so app number two starts from the loop instead of from scratch.
+## Normal Loop
 
-## Subscription use
-Pay each tool for its strength and stop there. Claude for breadth, orchestration, and its plugins and skills. Codex for on-Mac native builds and its computer-use. Grok is parked (an optional research or second-opinion lane). continue.dev is optional: an in-editor model switcher, useful only if you want several models in one editor.
+1. Open the repository in VS Code and continue the relevant recent Codex chat,
+   or start Codex from the repository directory.
+2. Give Codex a concrete outcome and any protected actions that remain
+   forbidden.
+3. Codex inspects current code/PR state, implements on a feature branch, runs
+   applicable checks, pushes, and opens or updates a draft PR.
+4. CI and a separate review pass check the exact PR head. Optional outside
+   review comments are evaluated as evidence.
+5. Codex addresses authorized findings and posts a structured response.
+6. Joaquim explicitly chooses whether to merge or authorize the next release
+   gate. Green checks alone never authorize shipping.
 
-## Tools in the loop
-- **Jump Desktop:** view the Mac's screen from Windows for the occasional check. LAN is near-instant; Tailscale extends it securely when you are away.
-- **Telegram:** how prompts currently move to the Mac. The Codex CLI removes this step.
-- **Trello (App Building board):** the task ledger and the single source of truth for what is done and what is next.
+## Release Loop
+
+Keep build automation separate from release authority:
+
+1. Codex prepares and verifies unsigned code, metadata, and release tooling.
+2. Joaquim separately authorizes any signing, upload, deployment, App Store
+   questionnaire, submission, or release action.
+3. Internal TestFlight smoke-tests the exact public-eligible candidate on two
+   iPhones.
+4. Joaquim submits the verified candidate to App Review.
+5. App updates repeat the same path; each update still goes through App Review,
+   although critical bug-fix submissions can request expedited review.
+
+## Automation Guardrails
+
+The current PR loop is human-supervised. Before enabling an unattended writer,
+require protected `main`, read-only default workflow tokens, a least-privileged
+automation identity, exact-head and unique-task checks, one-writer concurrency,
+and a tested manual disable switch. Never expose signing, deployment, App Store,
+merge, or secret-management authority to the unattended loop.
+
+The reusable prompt and readiness checklist live in
+`automation/codex-pr-routine.md`.
