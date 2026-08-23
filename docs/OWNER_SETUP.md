@@ -203,12 +203,12 @@ to store each secret safely.
     required. Joaquim approved `ITSAppUsesNonExemptEncryption = false` with no
     `ITSEncryptionExportComplianceCode` for the replacement build-5 archive.
     Revisit this decision before adding France or changing the crypto scope.
-- [ ] Run the owner-gated public-eligible candidate lane.
-  - Status: The first build-5 archive was signed, but Apple rejected its upload
-    with error 90592 and left the exact build reservation awaiting upload. Use
-    `retry_public_candidate_upload version:1.0 build_number:5` for the authorized
-    rebuild; do not rerun the incrementing `public_candidate` lane. Neither lane
-    distributes externally, submits for App Review, or releases the app.
+- [x] Run the owner-gated public-eligible candidate lane.
+  - Status: The first build-5 upload failed with Apple error 90592. The guarded
+    exact-build recovery rebuilt, signed, uploaded, and processed Kithra `1.0
+    (5)` on 2026-08-23. App Store Connect reports `VALID`, ready for internal
+    beta testing, and `usesNonExemptEncryption=false`. The lane did not attach
+    testers, distribute externally, submit for App Review, or release the app.
 - [x] Implement block/report controls.
   - Reports are metadata-only. Do not send decrypted videos to the operator.
   - Status: Initial iOS contact-row actions and relay endpoints added on 2026-05-27. Delete removes the contact from the current user's list, block removes the contact and prevents future uploads from the blocked user, and report stores metadata only.

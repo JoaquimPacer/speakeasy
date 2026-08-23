@@ -292,8 +292,10 @@ blockers, and unverified assumptions.
   Kithra's standard-algorithm, no-proprietary-algorithm, no-France scope. App
   Store Connect determined that no documentation is required, and Joaquim
   authorized `ITSAppUsesNonExemptEncryption = false` with no export-compliance
-  code for the fresh build-5 archive and its targeted upload. This does not
-  authorize App Review submission or public release.
+  code for the fresh build-5 archive and its targeted upload. The replacement
+  Kithra `1.0 (5)` package was signed, uploaded, and processed as `VALID` with
+  `usesNonExemptEncryption=false`; no testers were attached and no App Review
+  submission or public release occurred.
 
 ## Open Placeholders
 

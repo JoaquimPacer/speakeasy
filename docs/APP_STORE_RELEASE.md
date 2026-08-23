@@ -131,7 +131,9 @@ Owner tasks:
   the exact signed archive's privacy report.
 - Apple Distribution signing and the App Store Connect API key are available on
   the release Mac. The first build-5 archive was signed, but its upload was
-  rejected with Apple error 90592 and must not be reused.
+  rejected with Apple error 90592 and was not reused. A fresh replacement
+  archive was signed and uploaded on 2026-08-23; App Store Connect processed
+  Kithra `1.0 (5)` as `VALID` with `usesNonExemptEncryption=false`.
 - On 2026-08-23 Joaquim completed Apple's app-level encryption questionnaire
   using the current factual scope: Kithra uses standard encryption algorithms,
   no proprietary algorithms, and is not available in France. App Store Connect
@@ -215,8 +217,10 @@ eligible for a later App Review submission by deliberately omitting
 beta-review submission, attaches only to `Kithra Internal` after export
 compliance clears, and never submits for App Review or releases the app. The
 first build-5 upload attempt failed with Apple error 90592 and left one exact
-`AWAITING_UPLOAD` reservation. Before upload, the lane inspects the built archive
-and fails closed unless the app is iPhone-only, contains
+`AWAITING_UPLOAD` reservation. The targeted recovery consumed that reservation
+successfully on 2026-08-23; the processed build was not attached to testers or
+submitted for review. Before upload, the lane inspects the built archive and
+fails closed unless the app is iPhone-only, contains
 `PrivacyInfo.xcprivacy`, resolves the production HTTPS relay, declares
 `ITSAppUsesNonExemptEncryption = false`, omits
 `ITSEncryptionExportComplianceCode`, and has the selected version/build.
