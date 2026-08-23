@@ -288,6 +288,12 @@ blockers, and unverified assumptions.
   public availability. The previous beta hostname must remain available during
   the transition; devices moving between hostnames must register again and
   mutually reverify safety numbers.
+- 2026-08-23: Joaquim completed Apple's app-level encryption questionnaire for
+  Kithra's standard-algorithm, no-proprietary-algorithm, no-France scope. App
+  Store Connect determined that no documentation is required, and Joaquim
+  authorized `ITSAppUsesNonExemptEncryption = false` with no export-compliance
+  code for the fresh build-5 archive and its targeted upload. This does not
+  authorize App Review submission or public release.
 
 ## Open Placeholders
 

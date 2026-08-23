@@ -196,19 +196,19 @@ to store each secret safely.
     `docs/COMMUNITY_GUIDELINES.md` and
     `docs/ABUSE_RESPONSE_RUNBOOK_DRAFT.md`; publication and operational setup
     remain pending.
-- [ ] Complete encryption export compliance in App Store Connect.
-  - Decision: Option B selected by Joaquim on 2026-07-20. The next upload declares
-    `ITSAppUsesNonExemptEncryption = true` so App Store Connect presents the
-    questionnaire; tester attachment remains blocked until it is resolved.
-  - Status: After the upload, record the non-secret questionnaire outcome here.
-    If Apple confirms exemption, Joaquim decides whether to set the plist value
-    to `false`. If Apple requires documentation, keep it `true` and add only an
-    Apple-issued `ITSEncryptionExportComplianceCode`.
+- [x] Complete encryption export compliance in App Store Connect.
+  - Decision: On 2026-08-23 Joaquim answered Apple's app-level questionnaire for
+    standard encryption algorithms, no proprietary algorithms, and no France
+    availability. App Store Connect determined that no documentation is
+    required. Joaquim approved `ITSAppUsesNonExemptEncryption = false` with no
+    `ITSEncryptionExportComplianceCode` for the replacement build-5 archive.
+    Revisit this decision before adding France or changing the crypto scope.
 - [ ] Run the owner-gated public-eligible candidate lane.
-  - Status: `fastlane public_candidate` is implemented but has not been run. It
-    signs and uploads only after an exact local confirmation, does not distribute
-    externally, submit for App Review, or release, and must wait for separate
-    owner approval plus the remaining public-release blockers.
+  - Status: The first build-5 archive was signed, but Apple rejected its upload
+    with error 90592 and left the exact build reservation awaiting upload. Use
+    `retry_public_candidate_upload version:1.0 build_number:5` for the authorized
+    rebuild; do not rerun the incrementing `public_candidate` lane. Neither lane
+    distributes externally, submits for App Review, or releases the app.
 - [x] Implement block/report controls.
   - Reports are metadata-only. Do not send decrypted videos to the operator.
   - Status: Initial iOS contact-row actions and relay endpoints added on 2026-05-27. Delete removes the contact from the current user's list, block removes the contact and prevents future uploads from the blocked user, and report stores metadata only.

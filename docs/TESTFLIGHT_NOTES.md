@@ -27,10 +27,12 @@ routing metadata disclosed in the privacy policy.
 ## Pre-Invite Checklist
 
 - Confirm the uploaded build finished processing.
-- For the next `ITSAppUsesNonExemptEncryption = true` upload, expect `Missing
-  Compliance` until Joaquim completes App Store Connect's export-compliance
-  questionnaire. Do not invite testers while the answer or Apple review is
-  pending. After clearance, run the following from `ios/` for that exact upload:
+- For the current crypto scope, require the processed build to report
+  `usesNonExemptEncryption=false`. Apple determined on 2026-08-23 that no
+  documentation is required while Kithra uses the declared standard algorithms
+  and remains unavailable in France. If the build instead reports `Missing
+  Compliance`, stop and inspect that exact build; do not upload another binary.
+  After the build is clear, run the following from `ios/` for that exact upload:
 
   ```sh
   KITHRA_INTERNAL_TESTFLIGHT_CONFIRM=I_CONFIRM_INTERNAL_TESTFLIGHT_ACTION \
