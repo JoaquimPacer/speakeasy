@@ -31,6 +31,14 @@ Build and upload an internal-only Kithra build to TestFlight
 
 Build and upload a public-eligible Kithra candidate without submitting it
 
+### ios retry_public_candidate_upload
+
+```sh
+[bundle exec] fastlane ios retry_public_candidate_upload
+```
+
+Rebuild and upload one exact reserved public candidate without incrementing
+
 ### ios verify_public_candidate
 
 ```sh
