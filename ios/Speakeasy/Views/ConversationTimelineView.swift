@@ -335,6 +335,7 @@ struct ConversationTimelineView: View {
         .disabled(
             (!recorder.isReady && !isScreenshotPreview) ||
                 appState.isWorking ||
+                recorder.isStoppingForFinalSend ||
                 (!recorder.isRecording && trustState != .verified)
         )
     }
@@ -606,6 +607,11 @@ struct InlineRecordingInvalidation {
     let outputURLs: [URL]
 }
 
+struct InlineRecordingOutputClaim: Equatable {
+    let generation: UInt64
+    let ownedURL: URL
+}
+
 final class InlineRecordingLifecycle: @unchecked Sendable {
     private let lock = NSLock()
     private var nextGeneration: UInt64 = 0
@@ -638,10 +644,10 @@ final class InlineRecordingLifecycle: @unchecked Sendable {
         return true
     }
 
-    func generation(for url: URL) -> UInt64? {
+    func outputClaim(for url: URL) -> InlineRecordingOutputClaim? {
         lock.lock()
         defer { lock.unlock() }
-        return generationByOutputPath[url.standardizedFileURL.path]
+        return registeredOutputClaim(for: url.standardizedFileURL)
     }
 
     var currentGeneration: UInt64? {
@@ -650,11 +656,53 @@ final class InlineRecordingLifecycle: @unchecked Sendable {
         return activeGeneration
     }
 
-    func takeGeneration(for url: URL) -> UInt64? {
+    func takeOutputClaim(for url: URL) -> InlineRecordingOutputClaim? {
         lock.lock()
         defer { lock.unlock() }
-        return generationByOutputPath.removeValue(
-            forKey: url.standardizedFileURL.path
+        let canonicalURL = url.standardizedFileURL
+        guard let claim = registeredOutputClaim(for: canonicalURL) else {
+            return nil
+        }
+        generationByOutputPath[claim.ownedURL.path] = nil
+        return claim
+    }
+
+    /// A file-output finish callback is definitive once the movie output is no
+    /// longer recording. If the file disappeared before device/inode identity
+    /// could be read, recover only the sole active capture reservation with the
+    /// exact generated filename. This resolves container aliases without
+    /// letting a stale callback consume a newer capture with a different UUID.
+    func takeDefinitiveOutputClaim(
+        for url: URL,
+        allowSoleFilenameFallback: Bool
+    ) -> InlineRecordingOutputClaim? {
+        lock.lock()
+        defer { lock.unlock() }
+        let canonicalURL = url.standardizedFileURL
+        if let claim = registeredOutputClaim(for: canonicalURL) {
+            generationByOutputPath[claim.ownedURL.path] = nil
+            return claim
+        }
+
+        guard allowSoleFilenameFallback,
+              let activeGeneration else {
+            return nil
+        }
+        let matchingActivePaths = generationByOutputPath.compactMap { path, generation in
+            generation == activeGeneration
+                && URL(fileURLWithPath: path).lastPathComponent == canonicalURL.lastPathComponent
+                ? path
+                : nil
+        }
+        guard matchingActivePaths.count == 1,
+              let registeredPath = matchingActivePaths.first,
+              let ownedURL = outputURLsByGeneration[activeGeneration]?[registeredPath] else {
+            return nil
+        }
+        generationByOutputPath[registeredPath] = nil
+        return InlineRecordingOutputClaim(
+            generation: activeGeneration,
+            ownedURL: ownedURL
         )
     }
 
@@ -735,6 +783,99 @@ final class InlineRecordingLifecycle: @unchecked Sendable {
         cancellationsByGeneration[generation] = nil
         lock.unlock()
     }
+
+    private func registeredOutputClaim(for canonicalURL: URL) -> InlineRecordingOutputClaim? {
+        if let exactGeneration = generationByOutputPath[canonicalURL.path],
+           let ownedURL = outputURLsByGeneration[exactGeneration]?[canonicalURL.path] {
+            return InlineRecordingOutputClaim(
+                generation: exactGeneration,
+                ownedURL: ownedURL
+            )
+        }
+
+        // The delegate URL is supplied by AVFoundation rather than round-
+        // tripped by this type. Match a path alias only by stable on-disk file
+        // identity; a filename or current-generation fallback would let an
+        // unrelated callback claim plaintext ownership.
+        guard let callbackIdentity = Self.fileIdentity(for: canonicalURL) else {
+            return nil
+        }
+        for (registeredPath, generation) in generationByOutputPath {
+            guard Self.fileIdentity(for: URL(fileURLWithPath: registeredPath)) == callbackIdentity,
+                  let ownedURL = outputURLsByGeneration[generation]?[registeredPath] else {
+                continue
+            }
+            return InlineRecordingOutputClaim(
+                generation: generation,
+                ownedURL: ownedURL
+            )
+        }
+        return nil
+    }
+
+    private static func fileIdentity(for url: URL) -> InlineRecordingFileIdentity? {
+        guard let attributes = try? FileManager.default.attributesOfItem(atPath: url.path),
+              let systemNumber = attributes[.systemNumber] as? NSNumber,
+              let fileNumber = attributes[.systemFileNumber] as? NSNumber else {
+            return nil
+        }
+        return InlineRecordingFileIdentity(
+            systemNumber: systemNumber.uint64Value,
+            fileNumber: fileNumber.uint64Value
+        )
+    }
+}
+
+private struct InlineRecordingFileIdentity: Hashable {
+    let systemNumber: UInt64
+    let fileNumber: UInt64
+}
+
+enum InlineRecordingFinishAction: Equatable {
+    case resumeAfterCameraFlip
+    case finishForSend
+    case rejectUnexpectedFinish
+}
+
+enum InlineRecordingToggleAction: Equatable {
+    case start
+    case stop
+    case ignore
+}
+
+enum InlineRecordingTogglePolicy {
+    static func action(
+        isRecording: Bool,
+        isStoppingForSend: Bool
+    ) -> InlineRecordingToggleAction {
+        guard !isStoppingForSend else {
+            return .ignore
+        }
+        return isRecording ? .stop : .start
+    }
+}
+
+enum InlineRecordingFinishPolicy {
+    static func action(
+        isSwitchingCamera: Bool,
+        isStoppingForSend: Bool,
+        durationLimitReached: Bool
+    ) -> InlineRecordingFinishAction {
+        if isStoppingForSend || durationLimitReached {
+            return .finishForSend
+        }
+        if isSwitchingCamera {
+            return .resumeAfterCameraFlip
+        }
+        return .rejectUnexpectedFinish
+    }
+
+    static func isMaximumDurationError(_ error: Error?) -> Bool {
+        guard let error else { return false }
+        let nsError = error as NSError
+        return nsError.domain == AVFoundationErrorDomain
+            && nsError.code == AVError.Code.maximumDurationReached.rawValue
+    }
 }
 
 private final class InlineVideoRecorder: NSObject, ObservableObject, AVCaptureFileOutputRecordingDelegate, @unchecked Sendable {
@@ -745,6 +886,7 @@ private final class InlineVideoRecorder: NSObject, ObservableObject, AVCaptureFi
     @Published private(set) var errorMessage: String?
     @Published private(set) var isReady = false
     @Published private(set) var isRecording = false
+    @Published private(set) var isStoppingForFinalSend = false
     @Published private(set) var statusText = "Preparing camera"
 
     private let movieOutput = AVCaptureMovieFileOutput()
@@ -754,7 +896,6 @@ private final class InlineVideoRecorder: NSObject, ObservableObject, AVCaptureFi
     private var audioInput: AVCaptureDeviceInput?
     private var didConfigureSession = false
     private var isDiscardingRecording = false
-    private var isStoppingForFinalSend = false
     private var isSwitchingCameraDuringRecording = false
     private var segmentURLs: [URL] = []
     private var durationBudget = RecordingDurationBudget()
@@ -794,11 +935,23 @@ private final class InlineVideoRecorder: NSObject, ObservableObject, AVCaptureFi
     }
 
     func toggleRecording() {
-        isRecording ? stopRecordingForSend() : startRecordingSession()
+        switch InlineRecordingTogglePolicy.action(
+            isRecording: isRecording,
+            isStoppingForSend: isStoppingForFinalSend
+        ) {
+        case .start:
+            startRecordingSession()
+        case .stop:
+            stopRecordingForSend()
+        case .ignore:
+            return
+        }
     }
 
     func flipCamera() {
-        guard canFlipCamera, !isSwitchingCameraDuringRecording else {
+        guard canFlipCamera,
+              !isSwitchingCameraDuringRecording,
+              !isStoppingForFinalSend else {
             return
         }
 
@@ -887,6 +1040,8 @@ private final class InlineVideoRecorder: NSObject, ObservableObject, AVCaptureFi
             try plaintextTempJanitor.beginProducing([url])
         } catch {
             resetRecordingState(completing: generation)
+            errorMessage = error.localizedDescription
+            statusText = error.localizedDescription
             return
         }
         guard recordingLifecycle.registerOutput(url, generation: generation) else {
@@ -904,7 +1059,7 @@ private final class InlineVideoRecorder: NSObject, ObservableObject, AVCaptureFi
             }
             guard !self.recordingLifecycle.isDiscarded(generation),
                   !self.movieOutput.isRecording else {
-                _ = self.recordingLifecycle.takeGeneration(for: url)
+                _ = self.recordingLifecycle.takeOutputClaim(for: url)
                 Self.cleanupRecordingFiles([url])
                 self.plaintextTempJanitor.finishProducing([url])
                 if self.recordingLifecycle.isDiscarded(generation) {
@@ -925,6 +1080,9 @@ private final class InlineVideoRecorder: NSObject, ObservableObject, AVCaptureFi
     }
 
     private func stopRecordingForSend() {
+        guard !isStoppingForFinalSend else {
+            return
+        }
         isStoppingForFinalSend = true
         statusText = "Preparing video"
 
@@ -932,9 +1090,10 @@ private final class InlineVideoRecorder: NSObject, ObservableObject, AVCaptureFi
             guard let self else { return }
             if self.movieOutput.isRecording {
                 self.movieOutput.stopRecording()
-            } else if let generation = self.recordingLifecycle.currentGeneration {
-                self.finishRecordedSegments(generation: generation)
             }
+            // If AVFoundation has not delivered didStartRecording yet, that
+            // callback observes the pending stop on main and stops the output.
+            // Never finish an empty segment list while start is still in flight.
         }
     }
 
@@ -1418,20 +1577,26 @@ private final class InlineVideoRecorder: NSObject, ObservableObject, AVCaptureFi
         didStartRecordingTo fileURL: URL,
         from connections: [AVCaptureConnection]
     ) {
-        guard let generation = recordingLifecycle.generation(for: fileURL),
-              !recordingLifecycle.isDiscarded(generation) else {
+        guard let claim = recordingLifecycle.outputClaim(for: fileURL),
+              !recordingLifecycle.isDiscarded(claim.generation) else {
             if movieOutput.isRecording {
                 movieOutput.stopRecording()
             }
             return
         }
         updateOnMain {
-            guard !self.recordingLifecycle.isDiscarded(generation) else {
+            guard !self.recordingLifecycle.isDiscarded(claim.generation) else {
                 return
             }
             self.errorMessage = nil
             self.isRecording = true
             self.statusText = "Recording"
+            if self.isStoppingForFinalSend {
+                self.sessionQueue.async { [weak self] in
+                    guard let self, self.movieOutput.isRecording else { return }
+                    self.movieOutput.stopRecording()
+                }
+            }
         }
     }
 
@@ -1441,30 +1606,46 @@ private final class InlineVideoRecorder: NSObject, ObservableObject, AVCaptureFi
         from connections: [AVCaptureConnection],
         error: Error?
     ) {
-        defer { plaintextTempJanitor.finishProducing([outputFileURL]) }
-        let generation = recordingLifecycle.takeGeneration(for: outputFileURL)
-        let shouldDiscard = generation.map(recordingLifecycle.isDiscarded) ?? true
-        let shouldResumeAfterFlip = isSwitchingCameraDuringRecording && !shouldDiscard
-        let shouldFinishForSend = isStoppingForFinalSend && !shouldDiscard
+        guard let claim = recordingLifecycle.takeDefinitiveOutputClaim(
+            for: outputFileURL,
+            allowSoleFilenameFallback: !movieOutput.isRecording
+        ) else {
+            // An unrelated callback must never claim a registered plaintext
+            // producer. A definitive callback for the active output is handled
+            // above by exact filename fallback; anything left here may be a
+            // stale duplicate and must not consume or cancel a newer capture.
+            Self.cleanupRecordingFiles([outputFileURL])
+            updateOnMain {
+                self.errorMessage = "Recording output could not be verified. Please try again."
+                self.statusText = "Recording output could not be verified"
+            }
+            return
+        }
+        let generation = claim.generation
+        let ownedOutputURL = claim.ownedURL
+        defer { plaintextTempJanitor.finishProducing([ownedOutputURL]) }
+
+        let shouldDiscard = recordingLifecycle.isDiscarded(generation)
         var recordingError: String?
 
         if shouldDiscard {
             // AVFoundation may recreate/finish the file after stopSession's
             // early unlink. Remove it directly on the delegate callback before
             // dispatching any UI reset that might be suspended in background.
-            Self.cleanupRecordingFiles([outputFileURL])
+            Self.cleanupRecordingFiles([ownedOutputURL])
             updateOnMain {
                 self.resetRecordingState(
-                    completing: generation ?? self.recordingLifecycle.currentGeneration
+                    completing: generation
                 )
             }
             return
         }
 
+        let maximumDurationReached = InlineRecordingFinishPolicy.isMaximumDurationError(error)
         if let error {
             let nsError = error as NSError
             let finished = (nsError.userInfo[AVErrorRecordingSuccessfullyFinishedKey] as? Bool) ?? false
-            if !finished {
+            if !finished, !maximumDurationReached {
                 recordingError = error.localizedDescription
             }
         }
@@ -1473,51 +1654,65 @@ private final class InlineVideoRecorder: NSObject, ObservableObject, AVCaptureFi
             do {
                 try FileManager.default.setAttributes(
                     [.protectionKey: FileProtectionType.complete],
-                    ofItemAtPath: outputFileURL.path
+                    ofItemAtPath: ownedOutputURL.path
                 )
             } catch {
                 recordingError = error.localizedDescription
             }
         }
         if recordingError != nil {
-            Self.cleanupRecordingFiles([outputFileURL])
+            Self.cleanupRecordingFiles([ownedOutputURL])
         }
         let segmentDuration = recordingError == nil
-            ? CMTimeGetSeconds(AVURLAsset(url: outputFileURL).duration)
+            ? CMTimeGetSeconds(AVURLAsset(url: ownedOutputURL).duration)
             : 0
 
         updateOnMain {
+            guard !self.recordingLifecycle.isDiscarded(generation) else {
+                Self.cleanupRecordingFiles([ownedOutputURL])
+                self.resetRecordingState(completing: generation)
+                return
+            }
+
+            // These flags are mutated on main. Classifying the callback here
+            // prevents a stop tap racing a camera-flip completion on the
+            // AVFoundation delegate queue.
+            let finishAction = InlineRecordingFinishPolicy.action(
+                isSwitchingCamera: self.isSwitchingCameraDuringRecording,
+                isStoppingForSend: self.isStoppingForFinalSend,
+                durationLimitReached: maximumDurationReached
+            )
             if let recordingError {
                 self.errorMessage = recordingError
-                if shouldResumeAfterFlip {
+                if finishAction == .resumeAfterCameraFlip {
                     self.resumeAfterCameraFlip()
                 } else {
                     self.resetRecordingState(
-                        completing: generation ?? self.recordingLifecycle.currentGeneration
+                        completing: generation
                     )
                 }
                 return
             }
 
-            self.segmentURLs.append(outputFileURL)
+            self.segmentURLs.append(ownedOutputURL)
             self.durationBudget.includeSegment(durationSeconds: segmentDuration)
-            let durationLimitReached = self.durationBudget.remainingSeconds <= 0.05
+            let durationLimitReached = maximumDurationReached
+                || self.durationBudget.remainingSeconds <= 0.05
 
-            if shouldResumeAfterFlip && !durationLimitReached {
+            switch InlineRecordingFinishPolicy.action(
+                isSwitchingCamera: self.isSwitchingCameraDuringRecording,
+                isStoppingForSend: self.isStoppingForFinalSend,
+                durationLimitReached: durationLimitReached
+            ) {
+            case .resumeAfterCameraFlip:
                 self.statusText = "Switching camera"
                 self.resumeAfterCameraFlip()
-            } else if shouldFinishForSend {
-                if let generation {
-                    self.finishRecordedSegments(generation: generation)
-                } else {
-                    self.resetRecordingState()
-                }
-            } else {
-                if let generation {
-                    self.finishRecordedSegments(generation: generation)
-                } else {
-                    self.resetRecordingState()
-                }
+            case .finishForSend:
+                self.finishRecordedSegments(generation: generation)
+            case .rejectUnexpectedFinish:
+                self.resetRecordingState(completing: generation)
+                self.errorMessage = "Recording stopped unexpectedly. Please try again."
+                self.statusText = "Recording stopped unexpectedly"
             }
         }
     }
