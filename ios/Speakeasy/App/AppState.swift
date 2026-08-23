@@ -8,7 +8,7 @@ import Sodium
 final class AppState: ObservableObject {
     private static let relayBaseURLKey = "speakeasy.relayBaseURL.v1"
     private static let localDefaultRelayURL = URL(string: "http://localhost:8080")!
-    private static let publicDefaultRelayURL = URL(string: "https://api.joaquimpacer.com")!
+    private static let publicDefaultRelayURL = URL(string: "https://api.jqinnovation.com")!
 
     @Published var relayBaseURLString: String
     @Published var currentUser: SpeakeasyUser?

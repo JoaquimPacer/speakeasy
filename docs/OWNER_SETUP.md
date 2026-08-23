@@ -97,10 +97,14 @@ to store each secret safely.
 
 ## DNS And Relay Hosting
 
-- [ ] Choose the API subdomain.
+- [x] Choose the API subdomain.
   - Placeholder: `api.yourdomain.com`
-  - Final subdomain: `api.joaquimpacer.com`
-  - Status: Chosen on 2026-05-27. DigitalOcean DNS `A` record points to `137.184.80.178`.
+  - Final subdomain: `api.jqinnovation.com`
+  - Status: Joaquim approved the hostname on 2026-08-22. The release defaults
+    and deployment templates use it, but the Cloudflare DNS-only `A` record,
+    TLS certificate, active VPS virtual hosts, and public health check remain
+    pending separate deployment approval and verification. Keep the previous
+    beta hostname online during migration.
 - [x] Set up local Docker relay for development.
   - Status: Verified on Mac on 2026-05-21 with Docker Desktop 4.74.0, Docker Engine 29.4.3, and Docker Compose v5.1.4. `docker compose up --build -d` starts the relay and `/healthz` returns `ok`.
 - [ ] Set up Linux laptop relay for private beta.

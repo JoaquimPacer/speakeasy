@@ -51,12 +51,17 @@ Recommended cheapest serious beta path:
 
 1. Use the existing DigitalOcean VPS if it has enough spare CPU, RAM, disk, and
    bandwidth.
-2. Keep the relay behind `https://api.joaquimpacer.com`.
+2. Keep the relay behind `https://api.jqinnovation.com`.
 3. Use Docker Compose for the relay.
-4. Use Cloudflare Tunnel if you want HTTPS without opening public inbound app
-   ports on the VPS.
+4. Under the current trusted-proxy design, use a Cloudflare DNS-only record and
+   terminate HTTPS through Apache and Certbot on the VPS. Cloudflare proxying or
+   Tunnel requires a separately reviewed client-IP trust and origin-access
+   design.
 
-Vercel is useful for the privacy policy/support website, but not for the relay:
+Vercel can continue serving the main JQ Innovation website, but it should not
+host the relay. The explicit DNS-only `api.jqinnovation.com` record points
+directly to DigitalOcean, so relay requests do not consume Vercel traffic or
+function allowance:
 
 - Vercel Functions are not a good fit for durable SQLite and encrypted blob
   files.
@@ -76,10 +81,16 @@ The app should talk to an HTTPS hostname, not a LAN IP. Options:
 The release iPhone build has a configurable default relay URL:
 
 - Debug default: `http://localhost:8080`
-- Release default: `https://api.joaquimpacer.com`
+- Release default: `https://api.jqinnovation.com`
 
 Do not change the Release value without coordinating the relay deployment and
 re-running the complete release smoke test.
+
+The repository uses the new hostname, but its DNS, TLS, relay deployment, and
+public health check must be verified before signing or uploading the release
+candidate. Existing beta devices that used the previous hostname must reset
+their local registration, register again, and mutually reverify safety numbers
+because relay identity is scoped to the hostname.
 
 ## What "Release Server Config" Means
 

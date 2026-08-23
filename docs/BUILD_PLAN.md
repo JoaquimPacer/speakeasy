@@ -282,11 +282,19 @@ blockers, and unverified assumptions.
   iPhone and iPad. No existing build is the V1 candidate, and no build is
   attached to version `1.0`. Screenshots, metadata, privacy, age rating,
   content rights, trader status, and App Review contact remain incomplete.
+- 2026-08-22: Joaquim selected `api.jqinnovation.com` as the public relay
+  hostname. Release defaults and deployment templates were migrated, but that
+  repository change does not verify or authorize DNS, TLS, VPS deployment, or
+  public availability. The previous beta hostname must remain available during
+  the transition; devices moving between hostnames must register again and
+  mutually reverify safety numbers.
 
 ## Open Placeholders
 
-- Public relay: `api.joaquimpacer.com`; the previously deployed HTTPS relay must
-  be updated to the exact integrated release candidate before submission.
+- Public relay: Joaquim approved `api.jqinnovation.com` on 2026-08-22. The
+  repository configuration is migrated; its Cloudflare DNS-only record, TLS,
+  active VPS virtual hosts, exact integrated release candidate deployment, and
+  public health check must be verified before signing or submission.
 - Public support/privacy hostname: Joaquim approved
   `kithra.jqinnovation.com` on 2026-08-22. The repository configuration is
   migrated; DNS, TLS, deployment, and public reachability are not yet verified.

@@ -62,7 +62,8 @@ To test:
 6. Tap the contact, record a video, stop recording, and wait for auto-send.
 7. On the recipient iPhone, open the contact and play the received video.
 
-Beta relay URL: `https://api.joaquimpacer.com`
+Release-candidate relay URL: `https://api.jqinnovation.com` (DNS, TLS, relay
+deployment, and public health verification pending)
 
 Proposed support URL (not yet live):
 `https://kithra.jqinnovation.com/support.html`

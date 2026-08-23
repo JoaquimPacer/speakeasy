@@ -1,22 +1,26 @@
-# DigitalOcean Beta Relay
+# DigitalOcean Relay
 
-Relay hostname: `https://api.joaquimpacer.com`
+Target relay hostname: `https://api.jqinnovation.com`
 Target app/support hostname: `https://kithra.jqinnovation.com`
 
-Current beta status:
+Current status:
 
 - Droplet: `joaquimpacer-wp`
 - Public IPv4: `137.184.80.178`
 - Relay path: `/srv/speakeasy/current`
 - Persistent data path: `/srv/speakeasy/data`
-- Public health check: `https://api.joaquimpacer.com/healthz`; last verified
-  healthy on 2026-08-04. The deployed process predates the integrated release
-  branch and must not be treated as the release candidate.
+- Previous beta health check: `https://api.joaquimpacer.com/healthz`; last
+  verified healthy on 2026-08-04. The deployed process predates the integrated
+  release branch and must not be treated as the release candidate.
+- Target API: repository configuration uses `api.jqinnovation.com`; its DNS,
+  TLS, active VPS virtual hosts, exact relay deployment, and public health check
+  remain pending separate deployment approval and verification.
 - Public site: deployment pending. DNS, TLS, site deployment, and public
   reachability for `kithra.jqinnovation.com` must be verified before App Store
   submission.
-- TLS: valid for the API hostname on 2026-08-04. Support-site TLS remains
-  pending until DNS and the virtual host are configured and verified.
+- TLS: valid for the previous beta API hostname on 2026-08-04. Target API and
+  support-site TLS remain pending until DNS and the virtual hosts are configured
+  and verified.
 
 This deployment keeps the Go relay bound to localhost on the VPS and puts the
 existing web server in front of it for HTTPS. It is designed to coexist with
@@ -30,12 +34,14 @@ interface while that setting is enabled.
 ## DNS
 
 Create or verify these `A` records with each domain's authoritative DNS
-provider:
+provider only after the corresponding HTTP virtual host is installed and
+passes `apache2ctl configtest`:
 
-- Hostname: `api.joaquimpacer.com`
+- Hostname: `api.jqinnovation.com`
 - Type: `A`
-- Value: the existing DigitalOcean Droplet public IPv4 address
-- TTL: default or 300 seconds
+- Value: `137.184.80.178`
+- Cloudflare proxy status: **DNS only**
+- TTL: Auto
 
 - Hostname: `kithra.jqinnovation.com`
 - Type: `A`
@@ -45,9 +51,19 @@ provider:
 After DNS propagates:
 
 ```bash
-dig +short api.joaquimpacer.com
+dig +short api.jqinnovation.com
 dig +short kithra.jqinnovation.com
 ```
+
+Keep the previous beta hostname and virtual host available during the
+transition. DNS-only is required for the API under the current trusted-proxy
+design: enabling Cloudflare proxying would hide the direct client address from
+Apache and would also put Cloudflare request-size and connection-time limits in
+the encrypted video-upload path. Orange-cloud proxying requires a separately
+reviewed client-IP trust and origin-access design.
+
+This explicit API record bypasses Vercel; existing apex and `www` records can
+continue routing the main website to Vercel independently.
 
 ## VPS Layout
 
@@ -79,17 +95,17 @@ curl -fsS http://127.0.0.1:8080/healthz
 
 ## Apache
 
-The current Droplet uses Apache. Copy `apache-api.joaquimpacer.com.conf` to:
+The current Droplet uses Apache. Copy `apache-api.jqinnovation.com.conf` to:
 
 ```text
-/etc/apache2/sites-available/api.joaquimpacer.com.conf
+/etc/apache2/sites-available/api.jqinnovation.com.conf
 ```
 
 Enable it:
 
 ```bash
 sudo a2enmod proxy proxy_http proxy_wstunnel headers rewrite ssl
-sudo a2ensite api.joaquimpacer.com.conf
+sudo a2ensite api.jqinnovation.com.conf
 sudo apache2ctl configtest
 sudo systemctl reload apache2
 ```
@@ -141,7 +157,7 @@ sudo systemctl reload apache2
 Use Certbot with the Apache plugin after DNS resolves:
 
 ```bash
-sudo certbot --apache -d api.joaquimpacer.com
+sudo certbot --apache -d api.jqinnovation.com
 sudo certbot --apache -d kithra.jqinnovation.com
 ```
 
@@ -153,7 +169,7 @@ the HTTP and HTTPS virtual hosts satisfy that invariant.
 Then verify:
 
 ```bash
-curl -fsS https://api.joaquimpacer.com/healthz
+curl -fsS https://api.jqinnovation.com/healthz
 curl -fsS https://kithra.jqinnovation.com/
 curl -fsS https://kithra.jqinnovation.com/support.html
 curl -fsS https://kithra.jqinnovation.com/privacy.html
@@ -165,7 +181,13 @@ curl -fsS https://kithra.jqinnovation.com/community-guidelines.html
 The Release build default relay is set to:
 
 ```text
-https://api.joaquimpacer.com
+https://api.jqinnovation.com
 ```
 
 Debug remains local by default.
+
+Do not sign or upload a release build with this default until DNS, TLS, the
+active HTTP and HTTPS virtual hosts, `/healthz`, client-IP handling, and a
+representative encrypted upload have all been verified. Existing beta devices
+that move from the previous hostname must reset local registration, register
+again, and mutually reverify contact safety numbers.
