@@ -1,26 +1,31 @@
 # Kithra App Store Metadata Draft
 
-This is a working draft for App Store Connect. The dated snapshot below records
-distribution values already saved after owner direction. Joaquim must approve
-the remaining legal, privacy, age-rating, review-contact, compliance, and other
-unfinished answers before any additional value is entered. Preparing this file
-does not authorize an upload, App Review submission, or release.
+This is a working record for App Store Connect. The dated snapshot below records
+values that were saved or independently confirmed after owner direction. Joaquim
+must still reconfirm the age-rating UGC answer and every submission or release
+decision. Preparing this file does not authorize an App Review submission or
+release.
 
-## Live App Store Connect Snapshot (2026-08-09)
+## Live App Store Connect Snapshot (through 2026-08-23)
 
-- Version `1.0` is configured for manual release.
+- Version `1.0` remains in `PREPARE_FOR_SUBMISSION` with manual release.
 - Public distribution and the free price are saved.
 - Availability covers 174 storefronts; France is explicitly **Not Available**
-  pending encryption clearance.
+  under the no-France encryption scope Joaquim completed on 2026-08-23.
 - Mac and Apple Vision Pro compatibility are disabled.
-- Builds 1 through 4 exist, but build 4 reports non-exempt encryption as `No`
-  and supports both iPhone and iPad. It is not the iPhone-only,
-  questionnaire-triggering V1 candidate. No existing build is the V1 candidate,
-  and no build is attached to version `1.0`.
-- Screenshots, remaining product metadata, App Privacy answers, age rating,
-  content-rights answer, trader status, and App Review contact information are
-  incomplete. Joaquim retains approval of all legal, privacy, compliance,
-  submission, and release decisions.
+- Kithra `1.0 (5)` is the processed iPhone-only candidate. App Store Connect
+  reports `VALID`, `usesNonExemptEncryption=false`, and no TestFlight-group
+  attachment. Build 5 is selected for version `1.0`.
+- Three `1284x2778` iPhone screenshots are uploaded.
+- Copyright, primary and secondary categories, content rights, the 13+ age
+  rating, messaging disclosure, DSA non-trader status, and the English (U.S.)
+  product copy, keywords, support URL, and privacy-policy URL are saved.
+- `Sign-In Required: No`, the App Review contact, and the review notes are saved
+  and were independently read back through the App Store Connect API.
+- The App Privacy page was visually verified as published with no tracking. The
+  live age-rating `userGeneratedContent=false` answer still requires Joaquim's
+  reconfirmation. Joaquim retains approval of all legal, privacy, submission,
+  and release decisions.
 
 ## Product Page Copy
 
@@ -70,6 +75,8 @@ claims and that the exact release-candidate build still behaves as described.
 ## Screenshot Plan
 
 Use only consenting test content and Apple's current required iPhone sizes.
+Three clean `1284x2778` iPhone screenshots were visually validated and uploaded
+in the numbered order below on 2026-08-23.
 
 1. Conversation list with a verified test contact and delivery status.
 2. Camera-first conversation screen with the encrypted history strip.
@@ -113,15 +120,18 @@ questionnaire.
 
 ## Age Rating And User-Generated Content
 
-Do not choose a numeric rating from this offline draft. In Apple's live age
-rating questionnaire, disclose private messaging/chat and user-generated video
-content. Kithra has no public feed, user discovery, unrestricted browser,
-gambling, purchases, ads, or location feature.
+The live age-rating declaration currently records `THIRTEEN_PLUS`,
+`messagingAndChat=true`, and `userGeneratedContent=false`. Kithra has no public
+feed, user discovery, unrestricted browser, gambling, purchases, ads, or
+location feature. Because Kithra carries private user-created video, Joaquim
+must reconfirm that Apple's `userGeneratedContent=false` answer accurately
+describes private one-to-one messaging before submission.
 
-Joaquim must decide and document:
+Joaquim must still decide and document:
 
-- Minimum intended user age and whether Kithra is child-directed.
-- The live questionnaire's objectionable-content answers.
+- Whether Kithra is child-directed and whether the saved 13+ result remains
+  appropriate after the UGC answer is reconfirmed.
+- Any remaining live questionnaire objectionable-content answers.
 - The proposed rules and response commitments in
   `docs/COMMUNITY_GUIDELINES.md`, including the operator workflow for
   metadata-only reports at `support@jqinnovation.com`.
@@ -133,6 +143,9 @@ Joaquim must decide and document:
 Kithra has no transferable password-based demo account. Each installation
 creates device-bound keys, and reviewers can self-register a unique username.
 The complete workflow requires two iPhones:
+
+`Sign-In Required: No`, the App Review contact, and the notes were saved on
+2026-08-23 and independently read back through the App Store Connect API.
 
 1. Register a different username on each device.
 2. Create an invite on one device and accept it on the other.
@@ -151,18 +164,24 @@ alone cannot transfer the device-bound private identity to a review device.
 ## Owner-Supplied Fields
 
 - [ ] Seller/legal entity and rights to the `Kithra` name.
-- [ ] Copyright text.
-- [ ] Support URL and privacy-policy URL, publicly reachable over HTTPS.
-- [ ] App Review contact name, phone number, and email.
-- [ ] DSA trader or non-trader status.
-- [ ] App Privacy answers and deployed IP/proxy log-retention behavior.
-- [ ] Minimum age, child-directed status, UGC rules, and report-response process.
-- [ ] Content-rights attestation and standard or custom EULA.
-- [ ] English-only versus additional localizations.
+- [x] Copyright text saved.
+- [x] Support URL and privacy-policy URL saved and publicly reachable over HTTPS.
+- [x] App Review contact, notes, and `Sign-In Required: No` saved and read back.
+- [x] DSA non-trader status saved.
+- [x] App Privacy answers published with no tracking; deployed proxy behavior
+  was reconciled before publication.
+- [ ] Reconfirm the saved 13+ age rating's `userGeneratedContent=false` answer,
+  child-directed status, UGC rules, and report-response process.
+- [x] Content-rights attestation saved as use of third-party content.
+- [x] Retain Apple's standard EULA; no custom EULA is configured for V1.
+- [x] English (U.S.) localization saved; additional localizations are deferred.
 - [x] Public distribution and free price saved.
 - [x] Availability saved for 174 storefronts; France is explicitly **Not
-  Available** pending export-compliance resolution.
+  Available** under the completed no-France compliance scope.
 - [x] Version `1.0` configured for manual release.
 - [x] Mac and Apple Vision Pro compatibility disabled for V1.
-- [ ] Acceptance of no push notifications in public V1.
-- [ ] Final screenshots, copy, categories, and keywords.
+- [x] No push notifications accepted for public V1 and disclosed in review notes.
+- [x] Three `1284x2778` screenshots uploaded.
+- [x] English (U.S.) copy, primary/secondary categories, and keywords saved.
+- [x] Build 5 selected for version `1.0`.
+- [x] Final screenshot content and numbered order validated.

@@ -24,23 +24,28 @@ tokens, Apple API keys, or server passwords in this file.
   availability has not yet been configured. Revisit export documentation before
   enabling France because Kithra bundles industry-standard libsodium encryption.
 
-## Verified App Store Connect State (2026-08-09)
+## Verified App Store Connect State (through 2026-08-23)
 
-- The local Apple Distribution identity is valid. Recheck it immediately before
-  an owner-authorized signed archive.
+- The local Apple Distribution identity is valid and signed the replacement
+  build-5 archive. Recheck it immediately before a future signed archive.
 - App Store version `1.0` is configured for manual release with public
   distribution. The free price is saved.
 - Availability is configured for 174 storefronts. France is explicitly **Not
   Available** and remains outside the encryption-questionnaire scope recorded
   on 2026-08-23.
 - Designed-for-iPhone-on-Mac and Apple Vision Pro compatibility are disabled.
-- Builds 1 through 4 exist in App Store Connect. Build 4 reports non-exempt
-  encryption as `No` and supports both iPhone and iPad, so it is not the
-  iPhone-only, questionnaire-triggering V1 candidate. No existing build is the
-  V1 candidate, and no build is attached to version `1.0`.
-- Screenshots, product metadata, App Privacy answers, age rating, content-rights
-  answer, trader status, and App Review contact information remain incomplete.
-  Nothing is ready for App Review submission or release yet.
+- Kithra `1.0 (5)` is the processed iPhone-only candidate. It is `VALID`, reports
+  `usesNonExemptEncryption=false`, and is not attached to a TestFlight group.
+  Build 5 is selected for version `1.0`.
+- Three `1284x2778` iPhone screenshots are uploaded. Copyright, categories,
+  content rights, the 13+ age rating, messaging disclosure, DSA non-trader
+  status, and the English (U.S.) localization, support URL, and privacy-policy
+  URL are saved.
+- `Sign-In Required: No`, the App Review contact, and the review notes are saved
+  and were independently read back through the App Store Connect API. The App
+  Privacy page was visually verified as published with no tracking. The package
+  is assembled but remains in `PREPARE_FOR_SUBMISSION`; the age-rating
+  `userGeneratedContent=false` answer and owner submission decision remain open.
 
 ## Hosting Decision
 
@@ -87,11 +92,13 @@ The release iPhone build has a configurable default relay URL:
 Do not change the Release value without coordinating the relay deployment and
 re-running the complete release smoke test.
 
-The repository uses the new hostname, but its DNS, TLS, relay deployment, and
-public health check must be verified before signing or uploading the release
-candidate. Existing beta devices that used the previous hostname must reset
-their local registration, register again, and mutually reverify safety numbers
-because relay identity is scoped to the hostname.
+The repository and release build use the new hostname. Its DNS, TLS, and public
+database/storage health checks returned HTTP 200 on 2026-08-23, and the physical
+iPhone-to-simulator encrypted-video smoke used this relay successfully. Recheck
+health immediately before submission. Existing beta devices that used the
+previous hostname must reset their local registration, register again, and
+mutually reverify safety numbers because relay identity is scoped to the
+hostname.
 
 ## What "Release Server Config" Means
 
@@ -122,13 +129,15 @@ For a trusted tester:
 
 Owner tasks:
 
-- Choose and publish a public HTTPS support/privacy hostname.
-  `kithra.jqinnovation.com` is the current recommendation, pending Joaquim's
-  approval, DNS, TLS, deployment, and public verification.
-- Deploy the exact integrated relay version to the existing DigitalOcean host
-  only after separate deployment approval.
-- Review the bundled privacy manifest, prepare iPhone screenshots, and validate
-  the exact signed archive's privacy report.
+- The approved support and privacy pages are live at
+  `https://kithra.jqinnovation.com/support.html` and
+  `https://kithra.jqinnovation.com/privacy.html`; both returned HTTP 200 on
+  2026-08-23.
+- The approved relay hostname is live and passed its public health check and the
+  physical-iPhone-to-simulator encrypted-video smoke. Record the exact deployed
+  source revision and backup/restore evidence separately.
+- Three `1284x2778` iPhone screenshots are uploaded. Review their final order and
+  validate the exact signed archive's privacy report.
 - Apple Distribution signing and the App Store Connect API key are available on
   the release Mac. The first build-5 archive was signed, but its upload was
   rejected with Apple error 90592 and was not reused. A fresh replacement
@@ -143,6 +152,9 @@ Owner tasks:
   archive validator enforces both facts. Revisit the questionnaire and plist
   before adding France, proprietary cryptography, or changing the current crypto
   design.
+- Reconfirm the age-rating UGC answer before submission. The saved App Review
+  fields, selected build, screenshots, and published App Privacy answers require
+  no further entry unless the app or deployed behavior changes.
 - Keep all VPS, Cloudflare, DNS, and Apple secrets out of chat.
 
 Codex tasks:
@@ -150,8 +162,10 @@ Codex tasks:
 - Keep the Docker relay deployable with Compose.
 - Finish the remaining public-release security gates in `docs/BUILD_PLAN.md`.
 - Keep the privacy/support copy aligned with deployed behavior.
-- Verify server tests, simulator tests, a signed archive, two physical iPhones,
-  and `/healthz` before an owner-authorized candidate upload.
+- Preserve the completed server/simulator checks, signed archive,
+  physical-iPhone-to-simulator smoke, and `/healthz` evidence. Before submission,
+  run the exact processed TestFlight build on two iPhones, including account
+  deletion and identity-verification failure handling.
 
 ## One-Command Internal TestFlight Upload
 
@@ -218,9 +232,10 @@ beta-review submission, attaches only to `Kithra Internal` after export
 compliance clears, and never submits for App Review or releases the app. The
 first build-5 upload attempt failed with Apple error 90592 and left one exact
 `AWAITING_UPLOAD` reservation. The targeted recovery consumed that reservation
-successfully on 2026-08-23; the processed build was not attached to testers or
-submitted for review. Before upload, the lane inspects the built archive and
-fails closed unless the app is iPhone-only, contains
+successfully on 2026-08-23; the processed build was selected for version `1.0`
+but was not attached to testers or submitted for review. Before upload, the lane
+inspects the built archive and fails closed unless the app is iPhone-only,
+contains
 `PrivacyInfo.xcprivacy`, resolves the production HTTPS relay, declares
 `ITSAppUsesNonExemptEncryption = false`, omits
 `ITSEncryptionExportComplianceCode`, and has the selected version/build.
