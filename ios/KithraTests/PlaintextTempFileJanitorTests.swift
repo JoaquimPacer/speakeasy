@@ -1,3 +1,4 @@
+@preconcurrency import AVFoundation
 import Foundation
 import XCTest
 @testable import Kithra
@@ -109,7 +110,7 @@ final class PlaintextTempFileJanitorTests: XCTestCase {
         XCTAssertEqual(invalidation?.generation, firstGeneration)
         XCTAssertEqual(invalidation?.outputURLs, [firstURL.standardizedFileURL])
         XCTAssertTrue(lifecycle.isDiscarded(firstGeneration))
-        XCTAssertEqual(lifecycle.takeGeneration(for: firstURL), firstGeneration)
+        XCTAssertEqual(lifecycle.takeOutputClaim(for: firstURL)?.generation, firstGeneration)
 
         let nextGeneration = lifecycle.begin()
         lifecycle.complete(firstGeneration)
@@ -235,10 +236,201 @@ final class PlaintextTempFileJanitorTests: XCTestCase {
 
         // The AV delegate consumes its path lookup before invoking the view,
         // but lifecycle ownership must remain until AppState accepts the URL.
-        XCTAssertEqual(lifecycle.takeGeneration(for: outputURL), generation)
+        XCTAssertEqual(lifecycle.takeOutputClaim(for: outputURL)?.generation, generation)
         XCTAssertEqual(
             lifecycle.discardActive()?.outputURLs,
             [outputURL.standardizedFileURL]
+        )
+    }
+
+    func testInlineRecordingCallbackMatchesRegisteredFileAcrossPathAlias() throws {
+        let fileManager = FileManager.default
+        let root = fileManager.temporaryDirectory
+            .appendingPathComponent("KithraRecordingAliasTests-\(UUID().uuidString)", isDirectory: true)
+        let realDirectory = root.appendingPathComponent("real", isDirectory: true)
+        let aliasDirectory = root.appendingPathComponent("alias", isDirectory: true)
+        try fileManager.createDirectory(at: realDirectory, withIntermediateDirectories: true)
+        try fileManager.createSymbolicLink(
+            at: aliasDirectory,
+            withDestinationURL: realDirectory
+        )
+        defer { try? fileManager.removeItem(at: root) }
+
+        let filename = "kithra-inline-\(UUID().uuidString).mov"
+        let registeredURL = aliasDirectory.appendingPathComponent(filename)
+        let callbackURL = realDirectory.appendingPathComponent(filename)
+        let lifecycle = InlineRecordingLifecycle()
+        let generation = lifecycle.begin()
+        XCTAssertTrue(lifecycle.registerOutput(registeredURL, generation: generation))
+        XCTAssertTrue(fileManager.createFile(atPath: registeredURL.path, contents: Data("video".utf8)))
+
+        let observedClaim = try XCTUnwrap(lifecycle.outputClaim(for: callbackURL))
+        XCTAssertEqual(observedClaim.generation, generation)
+        XCTAssertEqual(observedClaim.ownedURL, registeredURL.standardizedFileURL)
+
+        // The delegate must finish the exact producer reservation Kithra made,
+        // even when AVFoundation returns an alias for the same on-disk file.
+        let consumedClaim = try XCTUnwrap(lifecycle.takeOutputClaim(for: callbackURL))
+        XCTAssertEqual(consumedClaim.generation, generation)
+        XCTAssertEqual(consumedClaim.ownedURL, registeredURL.standardizedFileURL)
+        XCTAssertNil(lifecycle.outputClaim(for: registeredURL))
+    }
+
+    func testDefinitiveRecordingCallbackRecoversOwnedURLAfterAliasedFileDisappears() throws {
+        let fileManager = FileManager.default
+        let root = fileManager.temporaryDirectory
+            .appendingPathComponent("KithraMissingCallbackAliasTests-\(UUID().uuidString)", isDirectory: true)
+        let realDirectory = root.appendingPathComponent("real", isDirectory: true)
+        let aliasDirectory = root.appendingPathComponent("alias", isDirectory: true)
+        try fileManager.createDirectory(at: realDirectory, withIntermediateDirectories: true)
+        try fileManager.createSymbolicLink(
+            at: aliasDirectory,
+            withDestinationURL: realDirectory
+        )
+        defer { try? fileManager.removeItem(at: root) }
+
+        let filename = "kithra-inline-\(UUID().uuidString).mov"
+        let registeredURL = aliasDirectory.appendingPathComponent(filename)
+        let callbackURL = realDirectory.appendingPathComponent(filename)
+        let lifecycle = InlineRecordingLifecycle()
+        let generation = lifecycle.begin()
+        XCTAssertTrue(lifecycle.registerOutput(registeredURL, generation: generation))
+
+        // Neither spelling exists, so device/inode matching is unavailable.
+        let claim = try XCTUnwrap(lifecycle.takeDefinitiveOutputClaim(
+            for: callbackURL,
+            allowSoleFilenameFallback: true
+        ))
+        XCTAssertEqual(claim.generation, generation)
+        XCTAssertEqual(claim.ownedURL, registeredURL.standardizedFileURL)
+    }
+
+    func testDefinitiveRecordingCallbackNeverConsumesDifferentActiveFilename() {
+        let root = FileManager.default.temporaryDirectory
+        let registeredURL = root.appendingPathComponent("kithra-inline-\(UUID().uuidString).mov")
+        let staleURL = root.appendingPathComponent("kithra-inline-\(UUID().uuidString).mov")
+        let lifecycle = InlineRecordingLifecycle()
+        let generation = lifecycle.begin()
+        XCTAssertTrue(lifecycle.registerOutput(registeredURL, generation: generation))
+
+        XCTAssertNil(lifecycle.takeDefinitiveOutputClaim(
+            for: staleURL,
+            allowSoleFilenameFallback: true
+        ))
+        XCTAssertEqual(lifecycle.outputClaim(for: registeredURL)?.generation, generation)
+    }
+
+    func testInlineRecordingCallbackRejectsDifferentFile() throws {
+        let fileManager = FileManager.default
+        let root = fileManager.temporaryDirectory
+            .appendingPathComponent("KithraRecordingIdentityTests-\(UUID().uuidString)", isDirectory: true)
+        try fileManager.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? fileManager.removeItem(at: root) }
+
+        let registeredURL = root.appendingPathComponent("kithra-inline-\(UUID().uuidString).mov")
+        let unrelatedURL = root.appendingPathComponent("kithra-inline-\(UUID().uuidString).mov")
+        XCTAssertTrue(fileManager.createFile(atPath: registeredURL.path, contents: Data("one".utf8)))
+        XCTAssertTrue(fileManager.createFile(atPath: unrelatedURL.path, contents: Data("two".utf8)))
+
+        let lifecycle = InlineRecordingLifecycle()
+        let generation = lifecycle.begin()
+        XCTAssertTrue(lifecycle.registerOutput(registeredURL, generation: generation))
+
+        XCTAssertNil(lifecycle.outputClaim(for: unrelatedURL))
+        XCTAssertNil(lifecycle.takeOutputClaim(for: unrelatedURL))
+        XCTAssertEqual(lifecycle.outputClaim(for: registeredURL)?.generation, generation)
+    }
+
+    func testInlineRecordingFinishPolicyRequiresAnExpectedStopReason() {
+        XCTAssertEqual(
+            InlineRecordingFinishPolicy.action(
+                isSwitchingCamera: true,
+                isStoppingForSend: false,
+                durationLimitReached: false
+            ),
+            .resumeAfterCameraFlip
+        )
+        XCTAssertEqual(
+            InlineRecordingFinishPolicy.action(
+                isSwitchingCamera: true,
+                isStoppingForSend: true,
+                durationLimitReached: false
+            ),
+            .finishForSend
+        )
+        XCTAssertEqual(
+            InlineRecordingFinishPolicy.action(
+                isSwitchingCamera: false,
+                isStoppingForSend: true,
+                durationLimitReached: false
+            ),
+            .finishForSend
+        )
+        XCTAssertEqual(
+            InlineRecordingFinishPolicy.action(
+                isSwitchingCamera: false,
+                isStoppingForSend: false,
+                durationLimitReached: true
+            ),
+            .finishForSend
+        )
+        XCTAssertEqual(
+            InlineRecordingFinishPolicy.action(
+                isSwitchingCamera: true,
+                isStoppingForSend: false,
+                durationLimitReached: true
+            ),
+            .finishForSend
+        )
+        XCTAssertEqual(
+            InlineRecordingFinishPolicy.action(
+                isSwitchingCamera: false,
+                isStoppingForSend: false,
+                durationLimitReached: false
+            ),
+            .rejectUnexpectedFinish
+        )
+
+        let maximumDurationError = NSError(
+            domain: AVFoundationErrorDomain,
+            code: AVError.Code.maximumDurationReached.rawValue
+        )
+        XCTAssertTrue(InlineRecordingFinishPolicy.isMaximumDurationError(maximumDurationError))
+        XCTAssertFalse(
+            InlineRecordingFinishPolicy.isMaximumDurationError(
+                NSError(domain: AVFoundationErrorDomain, code: AVError.Code.unknown.rawValue)
+            )
+        )
+    }
+
+    func testInlineRecordingToggleIgnoresRepeatedStopWhileCompletionIsPending() {
+        XCTAssertEqual(
+            InlineRecordingTogglePolicy.action(
+                isRecording: false,
+                isStoppingForSend: false
+            ),
+            .start
+        )
+        XCTAssertEqual(
+            InlineRecordingTogglePolicy.action(
+                isRecording: true,
+                isStoppingForSend: false
+            ),
+            .stop
+        )
+        XCTAssertEqual(
+            InlineRecordingTogglePolicy.action(
+                isRecording: true,
+                isStoppingForSend: true
+            ),
+            .ignore
+        )
+        XCTAssertEqual(
+            InlineRecordingTogglePolicy.action(
+                isRecording: false,
+                isStoppingForSend: true
+            ),
+            .ignore
         )
     }
 

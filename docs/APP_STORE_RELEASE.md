@@ -24,22 +24,28 @@ tokens, Apple API keys, or server passwords in this file.
   availability has not yet been configured. Revisit export documentation before
   enabling France because Kithra bundles industry-standard libsodium encryption.
 
-## Verified App Store Connect State (2026-08-09)
+## Verified App Store Connect State (through 2026-08-23)
 
-- The local Apple Distribution identity is valid. Recheck it immediately before
-  an owner-authorized signed archive.
+- The local Apple Distribution identity is valid and signed the replacement
+  build-5 archive. Recheck it immediately before a future signed archive.
 - App Store version `1.0` is configured for manual release with public
   distribution. The free price is saved.
 - Availability is configured for 174 storefronts. France is explicitly **Not
-  Available** pending encryption clearance.
+  Available** and remains outside the encryption-questionnaire scope recorded
+  on 2026-08-23.
 - Designed-for-iPhone-on-Mac and Apple Vision Pro compatibility are disabled.
-- Builds 1 through 4 exist in App Store Connect. Build 4 reports non-exempt
-  encryption as `No` and supports both iPhone and iPad, so it is not the
-  iPhone-only, questionnaire-triggering V1 candidate. No existing build is the
-  V1 candidate, and no build is attached to version `1.0`.
-- Screenshots, product metadata, App Privacy answers, age rating, content-rights
-  answer, trader status, and App Review contact information remain incomplete.
-  Nothing is ready for App Review submission or release yet.
+- Kithra `1.0 (5)` is the processed iPhone-only candidate. It is `VALID`, reports
+  `usesNonExemptEncryption=false`, and is not attached to a TestFlight group.
+  Build 5 is selected for version `1.0`.
+- Three `1284x2778` iPhone screenshots are uploaded. Copyright, categories,
+  content rights, the 13+ age rating, messaging disclosure, DSA non-trader
+  status, and the English (U.S.) localization, support URL, and privacy-policy
+  URL are saved.
+- `Sign-In Required: No`, the App Review contact, and the review notes are saved
+  and were independently read back through the App Store Connect API. The App
+  Privacy page was visually verified as published with no tracking. The package
+  is assembled but remains in `PREPARE_FOR_SUBMISSION`; the age-rating
+  `userGeneratedContent=false` answer and owner submission decision remain open.
 
 ## Hosting Decision
 
@@ -86,11 +92,13 @@ The release iPhone build has a configurable default relay URL:
 Do not change the Release value without coordinating the relay deployment and
 re-running the complete release smoke test.
 
-The repository uses the new hostname, but its DNS, TLS, relay deployment, and
-public health check must be verified before signing or uploading the release
-candidate. Existing beta devices that used the previous hostname must reset
-their local registration, register again, and mutually reverify safety numbers
-because relay identity is scoped to the hostname.
+The repository and release build use the new hostname. Its DNS, TLS, and public
+database/storage health checks returned HTTP 200 on 2026-08-23, and the physical
+iPhone-to-simulator encrypted-video smoke used this relay successfully. Recheck
+health immediately before submission. Existing beta devices that used the
+previous hostname must reset their local registration, register again, and
+mutually reverify safety numbers because relay identity is scoped to the
+hostname.
 
 ## What "Release Server Config" Means
 
@@ -121,34 +129,32 @@ For a trusted tester:
 
 Owner tasks:
 
-- Choose and publish a public HTTPS support/privacy hostname.
-  `kithra.jqinnovation.com` is the current recommendation, pending Joaquim's
-  approval, DNS, TLS, deployment, and public verification.
-- Deploy the exact integrated relay version to the existing DigitalOcean host
-  only after separate deployment approval.
-- Review the bundled privacy manifest, prepare iPhone screenshots, and validate
-  the exact signed archive's privacy report.
-- Apple Distribution signing access was installed and verified on the release
-  Mac on 2026-08-09. Reconfirm the identity immediately before an
-  owner-authorized signed archive; no archive has been signed yet.
-- Restore the private `.p8` file for the active App Store Connect automation key
-  from secure storage, or have Joaquim explicitly authorize an App Manager
-  replacement and revocation of the unusable Admin key. The active key record
-  exists, but its private key is not available to the owner-run Fastlane lane on
-  this Mac.
-- On the next TestFlight upload, expect `Missing Compliance`: Joaquim selected
-  the conservative `ITSAppUsesNonExemptEncryption = true` declaration so App
-  Store Connect presents its export-compliance questionnaire instead of
-  pre-answering it as exempt.
-- In App Store Connect, open the uploaded iOS build and choose **Provide Export
-  Compliance Information**. Do not invite testers or change the plist while the
-  answer is pending. Record the non-secret outcome in `docs/OWNER_SETUP.md`.
-- If Apple's outcome confirms that the bundled encryption is exempt, Joaquim can
-  make the final call to set `ITSAppUsesNonExemptEncryption = false` for future
-  builds. If Apple requires and approves documentation, keep the declaration
-  `true` and add only the Apple-issued `ITSEncryptionExportComplianceCode`.
-  Revisit the answer before adding France, proprietary cryptography, or changing
-  the current crypto design.
+- The approved support and privacy pages are live at
+  `https://kithra.jqinnovation.com/support.html` and
+  `https://kithra.jqinnovation.com/privacy.html`; both returned HTTP 200 on
+  2026-08-23.
+- The approved relay hostname is live and passed its public health check and the
+  physical-iPhone-to-simulator encrypted-video smoke. Record the exact deployed
+  source revision and backup/restore evidence separately.
+- Three `1284x2778` iPhone screenshots are uploaded. Review their final order and
+  validate the exact signed archive's privacy report.
+- Apple Distribution signing and the App Store Connect API key are available on
+  the release Mac. The first build-5 archive was signed, but its upload was
+  rejected with Apple error 90592 and was not reused. A fresh replacement
+  archive was signed and uploaded on 2026-08-23; App Store Connect processed
+  Kithra `1.0 (5)` as `VALID` with `usesNonExemptEncryption=false`.
+- On 2026-08-23 Joaquim completed Apple's app-level encryption questionnaire
+  using the current factual scope: Kithra uses standard encryption algorithms,
+  no proprietary algorithms, and is not available in France. App Store Connect
+  determined that no export-compliance documentation is required.
+- Joaquim approved `ITSAppUsesNonExemptEncryption = false` and no
+  `ITSEncryptionExportComplianceCode` for the replacement build-5 archive. The
+  archive validator enforces both facts. Revisit the questionnaire and plist
+  before adding France, proprietary cryptography, or changing the current crypto
+  design.
+- Reconfirm the age-rating UGC answer before submission. The saved App Review
+  fields, selected build, screenshots, and published App Privacy answers require
+  no further entry unless the app or deployed behavior changes.
 - Keep all VPS, Cloudflare, DNS, and Apple secrets out of chat.
 
 Codex tasks:
@@ -156,8 +162,10 @@ Codex tasks:
 - Keep the Docker relay deployable with Compose.
 - Finish the remaining public-release security gates in `docs/BUILD_PLAN.md`.
 - Keep the privacy/support copy aligned with deployed behavior.
-- Verify server tests, simulator tests, a signed archive, two physical iPhones,
-  and `/healthz` before an owner-authorized candidate upload.
+- Preserve the completed server/simulator checks, signed archive,
+  physical-iPhone-to-simulator smoke, and `/healthz` evidence. Before submission,
+  run the exact processed TestFlight build on two iPhones, including account
+  deletion and identity-verification failure handling.
 
 ## One-Command Internal TestFlight Upload
 
@@ -195,10 +203,9 @@ limit with `TESTFLIGHT_PROCESSING_TIMEOUT_SECONDS`. A timeout never re-uploads
 the binary: it reports the exact existing version/build and directs the operator
 to run the matching verification lane instead of rerunning `beta`.
 
-The next build intentionally stops before tester attachment when App Store
-Connect reports `Missing Compliance`. Joaquim must answer the build's export
-questionnaire in App Store Connect. After the build is cleared, resume that same
-upload with:
+If App Store Connect unexpectedly reports `Missing Compliance`, do not attach
+testers and do not upload another binary. Inspect the exact build's compliance
+state first. After Apple clears that same upload, resume it with:
 
 ```sh
 cd ios
@@ -222,11 +229,16 @@ The separate `public_candidate` lane creates a TestFlight build that remains
 eligible for a later App Review submission by deliberately omitting
 `testFlightInternalTestingOnly`. It still disables external distribution and
 beta-review submission, attaches only to `Kithra Internal` after export
-compliance clears, and never submits for App Review or releases the app. It has
-not been run from this integration branch. Before upload, it inspects the built
-archive and fails closed unless the app is iPhone-only, contains
-`PrivacyInfo.xcprivacy`, resolves the production HTTPS relay, retains
-`ITSAppUsesNonExemptEncryption = true`, and has the selected version/build.
+compliance clears, and never submits for App Review or releases the app. The
+first build-5 upload attempt failed with Apple error 90592 and left one exact
+`AWAITING_UPLOAD` reservation. The targeted recovery consumed that reservation
+successfully on 2026-08-23; the processed build was selected for version `1.0`
+but was not attached to testers or submitted for review. Before upload, the lane
+inspects the built archive and fails closed unless the app is iPhone-only,
+contains
+`PrivacyInfo.xcprivacy`, resolves the production HTTPS relay, declares
+`ITSAppUsesNonExemptEncryption = false`, omits
+`ITSEncryptionExportComplianceCode`, and has the selected version/build.
 
 Running it signs and uploads a binary, so do not invoke it without Joaquim's
 separate approval. The explicit confirmation is an owner gate, not a secret:
@@ -235,6 +247,18 @@ separate approval. The explicit confirmation is an owner gate, not a secret:
 cd ios
 KITHRA_PUBLIC_CANDIDATE_CONFIRM=I_CONFIRM_PUBLIC_ELIGIBLE_CANDIDATE \
   bundle exec fastlane public_candidate
+```
+
+Do not rerun `public_candidate` for a reserved build because it intentionally
+selects a new number. The exact-build recovery lane consumes only one existing
+`AWAITING_UPLOAD` reservation and never increments, commits, distributes, or
+submits the binary:
+
+```sh
+cd ios
+KITHRA_PUBLIC_CANDIDATE_CONFIRM=I_CONFIRM_PUBLIC_ELIGIBLE_CANDIDATE \
+  bundle exec fastlane retry_public_candidate_upload \
+  version:<version> build_number:<build-number>
 ```
 
 If processing or export compliance pauses the lane, resume the exact existing

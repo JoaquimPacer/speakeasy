@@ -288,20 +288,41 @@ blockers, and unverified assumptions.
   public availability. The previous beta hostname must remain available during
   the transition; devices moving between hostnames must register again and
   mutually reverify safety numbers.
+- 2026-08-23: Joaquim completed Apple's app-level encryption questionnaire for
+  Kithra's standard-algorithm, no-proprietary-algorithm, no-France scope. App
+  Store Connect determined that no documentation is required, and Joaquim
+  authorized `ITSAppUsesNonExemptEncryption = false` with no export-compliance
+  code for the fresh build-5 archive and its targeted upload. The replacement
+  Kithra `1.0 (5)` package was signed, uploaded, and processed as `VALID` with
+  `usesNonExemptEncryption=false`; no testers were attached and no App Review
+  submission or public release occurred.
+- 2026-08-23: The physical iPhone sent encrypted videos through
+  `https://api.jqinnovation.com` that the simulator received, decrypted, and
+  played. The relay database/storage health checks and the public support and
+  privacy pages returned HTTP 200. In App Store Connect, build 5 was selected
+  and three `1284x2778` screenshots were uploaded. Copyright, categories,
+  content rights, the 13+ age rating, messaging disclosure, DSA non-trader
+  status, and English (U.S.) metadata/support/privacy URLs are saved.
+  `Sign-In Required: No`, the App Review contact, and the review notes were saved
+  and independently read back through the App Store Connect API. The App Privacy
+  page was visually verified as published with no tracking. The age-rating
+  `userGeneratedContent=false` answer remains an owner reconfirmation before
+  submission.
 
 ## Open Placeholders
 
-- Public relay: Joaquim approved `api.jqinnovation.com` on 2026-08-22. The
-  repository configuration is migrated; its Cloudflare DNS-only record, TLS,
-  active VPS virtual hosts, exact integrated release candidate deployment, and
-  public health check must be verified before signing or submission.
+- Public relay: Joaquim approved `api.jqinnovation.com` on 2026-08-22. DNS, TLS,
+  the public database/storage health checks, and the candidate encrypted-video
+  smoke passed on 2026-08-23. Record the exact deployed source revision and
+  backup/restore evidence, and recheck health before submission.
 - Public support/privacy hostname: Joaquim approved
-  `kithra.jqinnovation.com` on 2026-08-22. The repository configuration is
-  migrated; DNS, TLS, deployment, and public reachability are not yet verified.
+  `kithra.jqinnovation.com` on 2026-08-22. The support and privacy pages are live
+  over HTTPS and returned HTTP 200 on 2026-08-23.
 - CI provider: default GitHub Actions macOS unless Xcode Cloud is clearly easier.
 - APNs key: create after core local message flow works.
-- DigitalOcean deployment: active, but the integrated relay version is not yet
-  deployed.
+- DigitalOcean deployment: active and serving the public-candidate smoke. The
+  exact deployed source revision and backup/restore evidence are not yet
+  recorded.
 - Auth after app restart: the public-release candidate implements expiring,
   single-use Ed25519 login challenges, 30-day sessions, proactive/401 renewal,
   and device-bound iOS Keychain storage. Unsigned app/test builds and the relay
@@ -314,6 +335,8 @@ blockers, and unverified assumptions.
   serialized registration have focused XCTest coverage; the relay path has
   focused concurrency and race coverage. Two disposable simulators completed
   registration, invite acceptance, reciprocal contacts, matching full safety
-  numbers, and verification on 2026-08-22. Public release still requires the
-  physical-device video smoke test and the owner-gated relay rollout, signing,
-  upload, and submission decisions.
+  numbers, and verification on 2026-08-22. The physical-iPhone-to-simulator
+  video smoke, relay rollout, signing, and upload are complete. Public release
+  still requires the exact processed TestFlight build's two-iPhone smoke and
+  account-deletion check, the age-rating UGC reconfirmation, and an
+  owner-authorized submission.

@@ -48,7 +48,7 @@ to store each secret safely.
   - Camera and microphone usage descriptions are required in the iOS app.
   - Push notifications can wait until after the local message flow works.
   - Status: V1 configuration complete with no Apple portal capabilities enabled. Camera and microphone usage descriptions are already present in `ios/Speakeasy/Resources/Info.plist`; push notifications remain deferred.
-- [ ] Restore App Store Connect API-key access for owner-run upload automation.
+- [x] Restore App Store Connect API-key access for owner-run upload automation.
   - Store in GitHub Actions or Xcode Cloud secrets.
   - Owner-local `.p8` path: `secrets/app-store-connect/AuthKey_<KEY_ID>.p8`
   - Suggested secret names:
@@ -57,30 +57,26 @@ to store each secret safely.
     - `ASC_KEY_P8_BASE64`
     - `APPLE_TEAM_ID`
     - `IOS_BUNDLE_ID`
-  - Status: App Store Connect showed one active Admin team key named
-    `Kithra Fastlane` on 2026-08-09, but its one-time-download `.p8` private-key
-    file was not present in the ignored repository secrets directory or found
-    elsewhere on the release Mac. Joaquim must either restore that exact private
-    key from secure storage or explicitly authorize creating an App Manager
-    replacement and revoking the unusable Admin key. CI secret values remain
-    unset.
+  - Status: The ignored owner-local key, Key ID, and Issuer ID successfully
+    authenticated the owner-authorized build-5 signing and upload on 2026-08-23.
+    CI secret values remain unset; keep a durable encrypted backup outside this
+    clone.
 - [x] Install and verify Apple Distribution signing access on the release Mac.
   - Status: On 2026-08-09, Xcode created an Apple Distribution certificate for
     team `Y45XWD5PRV`. A read-only Keychain check outside the Codex sandbox
-    reported valid Apple Development and Apple Distribution identities. No
-    archive was signed or uploaded during this verification.
+    reported valid Apple Development and Apple Distribution identities. The
+    identity successfully signed the replacement build-5 archive on 2026-08-23.
 - [x] Configure the App Store version and distribution shell.
-  - Status: Live App Store Connect state verified on 2026-08-09: version `1.0`
+  - Status: Live App Store Connect state verified through 2026-08-23: version `1.0`
     uses manual release; public distribution and the free price are saved;
     availability covers 174 storefronts with France explicitly **Not
-    Available** pending encryption clearance; and Mac and Apple Vision Pro
-    compatibility are disabled. These saved settings do not authorize upload,
-    App Review submission, or release.
-- [ ] Attach an eligible iPhone-only V1 build to App Store version `1.0`.
-  - Status: Builds 1 through 4 exist, but no build is attached. Build 4 reports
-    non-exempt encryption as `No` and supports iPhone and iPad, so it cannot be
-    the iPhone-only V1 candidate that presents the export-compliance
-    questionnaire. No existing build is the V1 candidate.
+    Available** under the completed no-France compliance scope; and Mac and
+    Apple Vision Pro compatibility are disabled. These saved settings do not
+    authorize App Review submission or release.
+- [x] Select the eligible iPhone-only V1 build for version `1.0`.
+  - Status: Kithra `1.0 (5)` is `VALID`, iPhone-only, and reports
+    `usesNonExemptEncryption=false`. Build 5 is selected for version `1.0`. No
+    TestFlight group is attached.
 - [ ] Create APNs authentication key when push work starts.
   - Store in CI/server secret storage, not in the repo.
   - Suggested secret names:
@@ -101,10 +97,11 @@ to store each secret safely.
   - Placeholder: `api.yourdomain.com`
   - Final subdomain: `api.jqinnovation.com`
   - Status: Joaquim approved the hostname on 2026-08-22. The release defaults
-    and deployment templates use it, but the Cloudflare DNS-only `A` record,
-    TLS certificate, active VPS virtual hosts, and public health check remain
-    pending separate deployment approval and verification. Keep the previous
-    beta hostname online during migration.
+    and deployment templates use it; DNS, TLS, and the public database/storage
+    health check returned HTTP 200 on 2026-08-23. The public-candidate physical
+    iPhone-to-simulator smoke also used this relay successfully. Record the exact
+    deployed source revision separately and keep the previous beta hostname
+    online during migration.
 - [x] Set up local Docker relay for development.
   - Status: Verified on Mac on 2026-05-21 with Docker Desktop 4.74.0, Docker Engine 29.4.3, and Docker Compose v5.1.4. `docker compose up --build -d` starts the relay and `/healthz` returns `ok`.
 - [ ] Set up Linux laptop relay for private beta.
@@ -117,9 +114,11 @@ to store each secret safely.
   - Public hostname:
   - Status: Skipped for now; Apache on the DigitalOcean Droplet will terminate HTTPS directly.
 - [x] Use the existing DigitalOcean Droplet for the beta relay.
-  - Status: `joaquimpacer-wp` is the beta relay host. The public HTTPS health
-    check passed on 2026-08-04, but the deployed process predates the integrated
-    release branch and must be updated only after separate deployment approval.
+  - Status: `joaquimpacer-wp` is the relay host. The
+    `https://api.jqinnovation.com/healthz` database/storage checks returned HTTP
+    200 on 2026-08-23 and the public candidate completed its encrypted-video
+    smoke through that endpoint. Exact deployed-revision and backup/restore
+    evidence remain to be recorded.
 
 ## GitHub And CI
 
@@ -149,8 +148,8 @@ to store each secret safely.
   - Final choice: GitHub Actions for secret-free PR checks; Xcode Cloud can be revisited for TestFlight upload/signing.
   - Status: Initial server and locally ad-hoc-signed iPhone simulator workflows
     exist and require no distribution credentials. The owner-run Fastlane lanes
-    are not GitHub Actions workflows; signing/upload secrets remain local until
-    Joaquim separately authorizes a candidate upload.
+    are not GitHub Actions workflows; signing/upload secrets remained local for
+    the owner-authorized candidate upload, and CI signing secrets remain unset.
 - [ ] Add CI secrets only after the workflow exists.
   - Status:
 
@@ -161,32 +160,39 @@ to store each secret safely.
     accepts the small risk of organic discovery and may use a new app record in
     the future if early reviews make a clean relaunch preferable.
 
-- [ ] Draft privacy policy.
+- [x] Draft and publish the privacy policy.
   - Must disclose metadata and encrypted content storage accurately.
-  - Status: Joaquim approved `kithra.jqinnovation.com`; the draft and static
-    page use that hostname. DNS, TLS, deployment, and public reachability remain
-    to be completed and verified before submission.
-- [ ] Draft support URL/page.
-  - Status: Draft and static page exist with `support@jqinnovation.com` and
-    `security@jqinnovation.com` on the approved `kithra.jqinnovation.com`
-    hostname. Publish over HTTPS and verify the public support URL before
-    submission.
-- [ ] Add in-app account deletion before public review.
-  - Status: Initial authenticated delete-account endpoint and iOS Settings flow added on 2026-05-27. Needs end-to-end real-device verification against the beta HTTPS relay before App Review.
-- [ ] Prepare App Privacy labels.
+  - Status: Joaquim approved `kithra.jqinnovation.com`; the static privacy page
+    at `https://kithra.jqinnovation.com/privacy.html` returned HTTP 200 on
+    2026-08-23.
+- [x] Draft and publish the support URL/page.
+  - Status: The public support page at
+    `https://kithra.jqinnovation.com/support.html` includes
+    `support@jqinnovation.com` and `security@jqinnovation.com` and returned HTTP
+    200 on 2026-08-23.
+- [ ] Verify in-app account deletion before public review.
+  - Status: Authenticated, retry-safe account deletion and the iOS Settings flow
+    are implemented. The exact processed build still needs an end-to-end
+    real-device deletion test against the public HTTPS relay before App Review.
+- [x] Prepare and publish App Privacy labels.
   - Status: An owner-reviewable `PrivacyInfo.xcprivacy` with the applicable
     first-party `UserDefaults` required-reason declaration is bundled in the
     app target. Validate the exact signed archive's privacy report, confirm the
-    deployed proxy/log-retention behavior, and then complete the App Store
-    Connect labels.
+    deployed proxy/log-retention behavior. App Store Connect was visually
+    verified as published with no tracking on 2026-08-23. Revisit the labels if
+    collection, tracking, or deployed logging behavior changes.
 - [ ] Complete public App Store metadata and compliance owner decisions.
-  - Status: Working copy, screenshot plan, conservative privacy-label answers,
-    and review notes are in `docs/APP_STORE_METADATA_DRAFT.md`. The free price,
-    public distribution, manual release, 174-storefront availability with
-    France excluded, and disabled Mac/Vision compatibility are saved. Joaquim
-    must still approve the App Review contact, copyright, categories,
-    standard/custom EULA, content rights, age rating, privacy labels, English
-    localization, no-push V1, final copy, and final screenshots.
+  - Status: The free price, public/manual distribution, France exclusion,
+    disabled Mac/Vision compatibility, copyright, categories, content rights,
+    13+ rating, messaging disclosure, DSA non-trader status, and English (U.S.)
+    localization/support/privacy URLs are saved. Three `1284x2778` screenshots
+    were visually validated and uploaded, build 5 was selected, and
+    `Sign-In Required: No` plus the App Review contact and notes were saved and
+    read back through the API. App Privacy is published with no tracking, the
+    standard Apple EULA remains in use, and the no-push V1 limitation is in the
+    review notes. The age rating's `userGeneratedContent=false` answer and final
+    owner submission decision remain open. See
+    `docs/APP_STORE_METADATA_DRAFT.md`.
 - [x] Declare DSA trader or non-trader status in App Store Connect.
   - Decision: Joaquim selected and saved DSA non-trader status on 2026-08-21.
 - [ ] Approve and staff the V1 user-content safety process.
@@ -196,19 +202,19 @@ to store each secret safely.
     `docs/COMMUNITY_GUIDELINES.md` and
     `docs/ABUSE_RESPONSE_RUNBOOK_DRAFT.md`; publication and operational setup
     remain pending.
-- [ ] Complete encryption export compliance in App Store Connect.
-  - Decision: Option B selected by Joaquim on 2026-07-20. The next upload declares
-    `ITSAppUsesNonExemptEncryption = true` so App Store Connect presents the
-    questionnaire; tester attachment remains blocked until it is resolved.
-  - Status: After the upload, record the non-secret questionnaire outcome here.
-    If Apple confirms exemption, Joaquim decides whether to set the plist value
-    to `false`. If Apple requires documentation, keep it `true` and add only an
-    Apple-issued `ITSEncryptionExportComplianceCode`.
-- [ ] Run the owner-gated public-eligible candidate lane.
-  - Status: `fastlane public_candidate` is implemented but has not been run. It
-    signs and uploads only after an exact local confirmation, does not distribute
-    externally, submit for App Review, or release, and must wait for separate
-    owner approval plus the remaining public-release blockers.
+- [x] Complete encryption export compliance in App Store Connect.
+  - Decision: On 2026-08-23 Joaquim answered Apple's app-level questionnaire for
+    standard encryption algorithms, no proprietary algorithms, and no France
+    availability. App Store Connect determined that no documentation is
+    required. Joaquim approved `ITSAppUsesNonExemptEncryption = false` with no
+    `ITSEncryptionExportComplianceCode` for the replacement build-5 archive.
+    Revisit this decision before adding France or changing the crypto scope.
+- [x] Run the owner-gated public-eligible candidate lane.
+  - Status: The first build-5 upload failed with Apple error 90592. The guarded
+    exact-build recovery rebuilt, signed, uploaded, and processed Kithra `1.0
+    (5)` on 2026-08-23. App Store Connect reports `VALID`, ready for internal
+    beta testing, and `usesNonExemptEncryption=false`. The lane did not attach
+    testers, distribute externally, submit for App Review, or release the app.
 - [x] Implement block/report controls.
   - Reports are metadata-only. Do not send decrypted videos to the operator.
   - Status: Initial iOS contact-row actions and relay endpoints added on 2026-05-27. Delete removes the contact from the current user's list, block removes the contact and prevents future uploads from the blocked user, and report stores metadata only.

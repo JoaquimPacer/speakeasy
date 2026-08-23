@@ -4,11 +4,12 @@ Speakeasy is designed to be self-hosted. The relay is untrusted by design, but
 deployment still matters: TLS, stable storage, clean secret handling, and basic
 host hardening protect availability and metadata.
 
-The current server scaffold lives in `server/` and is wired into
-`docker-compose.yml`. An older beta build is deployed behind HTTPS, but neither
-that deployment nor the integrated branch is suitable for public use until
-challenge-response auth, retention, quotas/rate limits, deletion failure
-handling, and upload limits are hardened.
+The current relay lives in `server/` and is wired into `docker-compose.yml`.
+`https://api.jqinnovation.com` is live behind TLS; its database/storage health
+checks returned HTTP 200 on 2026-08-23, and the public candidate completed a
+physical-iPhone-to-simulator encrypted-video smoke through it. Record the exact
+deployed source revision and backup/restore evidence separately: a healthy
+endpoint alone does not prove source parity or disaster-recovery readiness.
 
 ## Deployment Principles
 

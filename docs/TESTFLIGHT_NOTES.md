@@ -26,28 +26,35 @@ routing metadata disclosed in the privacy policy.
 
 ## Pre-Invite Checklist
 
-- Confirm the uploaded build finished processing.
-- For the next `ITSAppUsesNonExemptEncryption = true` upload, expect `Missing
-  Compliance` until Joaquim completes App Store Connect's export-compliance
-  questionnaire. Do not invite testers while the answer or Apple review is
-  pending. After clearance, run the following from `ios/` for that exact upload:
+- Kithra `1.0 (5)` finished processing as `VALID` and reports
+  `usesNonExemptEncryption=false`. Apple determined on 2026-08-23 that no
+  documentation is required while Kithra uses the declared standard algorithms
+  and remains unavailable in France. If the build later reports `Missing
+  Compliance`, stop and inspect that exact build; do not upload another binary.
+- Build 5 is the public-eligible candidate and currently has no TestFlight-group
+  attachment. When Joaquim authorizes internal attachment and testing, run the
+  public-candidate continuation from `ios/` for that exact upload:
 
   ```sh
-  KITHRA_INTERNAL_TESTFLIGHT_CONFIRM=I_CONFIRM_INTERNAL_TESTFLIGHT_ACTION \
-    bundle exec fastlane verify_beta \
-      version:<version> build_number:<build-number>
+  KITHRA_PUBLIC_CANDIDATE_CONFIRM=I_CONFIRM_PUBLIC_ELIGIBLE_CANDIDATE \
+    bundle exec fastlane verify_public_candidate \
+      version:1.0 build_number:5
   ```
 - Confirm an internal or external tester group has the processed build attached.
 - Send tester invites only after the build is visible in the selected group.
 
-Kithra 1.0 (build 2) was uploaded on July 19, 2026, processed without
-`Missing Compliance`, and attached to the `Kithra Internal` group.
+Kithra `1.0 (2)` is a historical internal build. Kithra `1.0 (5)` is the current
+public candidate; it is processed and compliant but is not attached to a beta
+group.
 
 ## App Review Notes Draft
 
 Kithra is an encrypted async video messaging app. The app requires camera and
 microphone access so users can record videos. The relay stores encrypted blobs
 and metadata only; it cannot decrypt video content.
+
+`Sign-In Required: No`, the App Review contact, and these notes were saved on
+2026-08-23 and independently read back through the App Store Connect API.
 
 To test:
 
@@ -62,11 +69,12 @@ To test:
 6. Tap the contact, record a video, stop recording, and wait for auto-send.
 7. On the recipient iPhone, open the contact and play the received video.
 
-Release-candidate relay URL: `https://api.jqinnovation.com` (DNS, TLS, relay
-deployment, and public health verification pending)
+Release-candidate relay URL: `https://api.jqinnovation.com` (DNS, TLS, public
+database/storage health, and the physical-iPhone-to-simulator encrypted-video
+smoke verified on 2026-08-23)
 
-Proposed support URL (not yet live):
+Public support URL:
 `https://kithra.jqinnovation.com/support.html`
 
-Proposed privacy policy URL (not yet live):
+Public privacy policy URL:
 `https://kithra.jqinnovation.com/privacy.html`
